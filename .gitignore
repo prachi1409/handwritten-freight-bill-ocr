@@ -1,0 +1,19 @@
+
+# Dependencies
+node_modules/
+
+# Environment variables
+.env
+*.env
+
+# Google Cloud credentials
+credentials/
+backend/credentials/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Build
+dist/
