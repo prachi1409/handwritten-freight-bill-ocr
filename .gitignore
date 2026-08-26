@@ -1,19 +1,25 @@
-
 # Dependencies
 node_modules/
 
 # Environment variables
 .env
 *.env
+.env.local
 
 # Google Cloud credentials
 credentials/
 backend/credentials/
+*.json
+!package.json
+!package-lock.json
+!tsconfig.json
 
 # Python
 __pycache__/
 *.py[cod]
 .pytest_cache/
+*.pyc
 
 # Build
 dist/
+build/

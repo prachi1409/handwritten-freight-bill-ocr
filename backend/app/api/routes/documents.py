@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.schemas.document import DocumentResponse, DocumentUploadResponse, IngestionBatchResult
+from app.schemas.document import DocumentResponse, DocumentUploadResponse, IngestionBatchResult, DocumentStatsResponse, DocumentReviewRequest
 from app.services.document_service import DocumentService
 
 logger = logging.getLogger(__name__)
@@ -30,6 +30,19 @@ def list_documents(
 ) -> List[DocumentResponse]:
     """List all documents."""
     return DocumentService.list_documents(db=db, skip=skip, limit=limit)
+
+
+@router.get(
+    "/stats",
+    response_model=DocumentStatsResponse,
+    summary="Get Document Status Statistics",
+    description="Retrieve counts for total, completed, review needed, pending, and failed documents."
+)
+def get_document_stats(
+    db: Session = Depends(get_db)
+) -> DocumentStatsResponse:
+    """Get status count statistics."""
+    return DocumentService.get_document_stats(db=db)
 
 
 @router.get(
@@ -78,6 +91,20 @@ def scan_input_directory(
 
 
 @router.post(
+    "/{document_id}/process",
+    response_model=DocumentResponse,
+    summary="Process Freight Bill Document via OCR",
+    description="Trigger OCR pipeline processing (Mock or Google Document AI) on a document by ID."
+)
+def process_document(
+    document_id: UUID,
+    db: Session = Depends(get_db)
+) -> DocumentResponse:
+    """Process document and extract structured JSON data."""
+    return DocumentService.process_document(db=db, document_id=document_id)
+
+
+@router.post(
     "/{document_id}/reprocess",
     response_model=DocumentResponse,
     summary="Reprocess Freight Bill Document",
@@ -91,20 +118,47 @@ def reprocess_document(
     return DocumentService.reprocess_document(db=db, document_id=document_id)
 
 
+@router.put(
+    "/{document_id}/review",
+    response_model=DocumentResponse,
+    summary="Submit Manual Review & Corrections",
+    description="Submit corrected extracted fields for a document, re-evaluate validation, and update document status."
+)
+def submit_document_review(
+    document_id: UUID,
+    payload: DocumentReviewRequest,
+    db: Session = Depends(get_db)
+) -> DocumentResponse:
+    """Save manual review corrections."""
+    return DocumentService.submit_document_review(
+        db=db,
+        document_id=document_id,
+        corrected_data=payload.extracted_data
+    )
+
+
 @router.get(
     "/{document_id}/file",
     summary="Download/View Document PDF File",
-    description="Serve the raw PDF file for viewing."
+    description="Serve the raw PDF file for inline viewing or download."
 )
 def get_document_file(
     document_id: UUID,
+    download: bool = False,
     db: Session = Depends(get_db)
 ):
-    """Serve PDF file binary."""
+    """Serve PDF file binary with inline disposition for browser PDF preview embedding."""
     doc = DocumentService.get_document_by_id(db=db, document_id=document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
     file_path = Path(doc.file_path)
     if not file_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.filename}")
-    return FileResponse(path=file_path, media_type="application/pdf", filename=doc.filename)
+    
+    disposition = "attachment" if download else "inline"
+    return FileResponse(
+        path=file_path,
+        media_type="application/pdf",
+        filename=doc.filename,
+        content_disposition_type=disposition
+    )

@@ -39,7 +39,7 @@ def find_pdf_files(directory_path: Union[str, Path]) -> List[Path]:
 def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> IngestionBatchResult:
     """Scan directory, validate documents, compute SHA-256 hashes, detect duplicates,
 
-    and record new pending documents in the database.
+    record new pending documents in the database, and trigger OCR extraction pipeline.
 
     Args:
         db: SQLAlchemy Database Session.
@@ -103,14 +103,23 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
             db.commit()
             db.refresh(new_doc)
 
-            logger.info(f"New document inserted successfully: '{filename}' (ID: {new_doc.id})")
+            # 5. Automatically trigger OCR extraction pipeline for newly ingested document
+            try:
+                from app.services.document_service import DocumentService
+                processed_doc = DocumentService.process_document(db, new_doc.id)
+                final_status = processed_doc.status.value
+            except Exception as proc_err:
+                logger.error(f"OCR processing failed during ingestion of '{filename}': {proc_err}", exc_info=True)
+                final_status = "FAILED"
+
+            logger.info(f"New document ingested and processed successfully: '{filename}' (ID: {new_doc.id}, status: {final_status})")
             result.ingested_count += 1
             result.items.append(IngestionItemDetail(
                 filename=filename,
                 status="INGESTED",
                 file_hash=file_hash,
                 document_id=new_doc.id,
-                message="Successfully ingested into pipeline with status PENDING"
+                message=f"Successfully ingested and processed with status '{final_status}'"
             ))
 
         except Exception as e:
@@ -130,4 +139,3 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
     )
 
     return result
-

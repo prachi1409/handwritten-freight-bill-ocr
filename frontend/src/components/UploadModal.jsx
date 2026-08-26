@@ -12,7 +12,7 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      if (!file.name.toLowerCase().endswith('.pdf')) {
+      if (!file.name.toLowerCase().endsWith('.pdf')) {
         setError('Only PDF files (.pdf) are supported.');
         setSelectedFile(null);
         return;

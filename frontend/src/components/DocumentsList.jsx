@@ -1,23 +1,47 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, Eye } from 'lucide-react';
+import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, HelpCircle, Eye } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import UploadModal from './UploadModal';
-import { fetchDocuments, scanDocuments } from '../api';
+import { fetchDocuments, fetchDocumentStats, scanDocuments } from '../api';
 
 export default function DocumentsList({ onSelectDocument }) {
   const [documents, setDocuments] = useState([]);
+  const [stats, setStats] = useState({
+    total_documents: 0,
+    completed: 0,
+    review_needed: 0,
+    pending: 0,
+    failed: 0
+  });
+  const [selectedFilter, setSelectedFilter] = useState('ALL');
   const [isLoading, setIsLoading] = useState(true);
   const [isScanning, setIsScanning] = useState(false);
   const [error, setError] = useState(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState(null);
 
-  const loadDocuments = async () => {
+  const loadData = async () => {
     setIsLoading(true);
     setError(null);
     try {
-      const data = await fetchDocuments();
-      setDocuments(data);
+      const [docsData, statsData] = await Promise.all([
+        fetchDocuments(),
+        fetchDocumentStats().catch(() => null)
+      ]);
+      setDocuments(docsData);
+
+      if (statsData) {
+        setStats(statsData);
+      } else {
+        // Fallback stats calculation if /stats endpoint unavailable
+        setStats({
+          total_documents: docsData.length,
+          completed: docsData.filter(d => (d.status || '').toUpperCase() === 'COMPLETED').length,
+          review_needed: docsData.filter(d => (d.status || '').toUpperCase() === 'REVIEW').length,
+          pending: docsData.filter(d => ['PENDING', 'PROCESSING'].includes((d.status || '').toUpperCase())).length,
+          failed: docsData.filter(d => (d.status || '').toUpperCase() === 'FAILED').length
+        });
+      }
       setIsLoading(false);
     } catch (err) {
       setIsLoading(false);
@@ -26,7 +50,7 @@ export default function DocumentsList({ onSelectDocument }) {
   };
 
   useEffect(() => {
-    loadDocuments();
+    loadData();
   }, []);
 
   const handleScanDirectory = async () => {
@@ -36,7 +60,7 @@ export default function DocumentsList({ onSelectDocument }) {
       const result = await scanDocuments();
       setIsScanning(false);
       setBannerMessage(`Scanned ${result.total_scanned} files. Ingested: ${result.ingested_count}, Duplicates: ${result.duplicate_count}, Invalid: ${result.invalid_count}.`);
-      loadDocuments();
+      loadData();
     } catch (err) {
       setIsScanning(false);
       setError(err.message || 'Failed to scan input directory.');
@@ -45,14 +69,19 @@ export default function DocumentsList({ onSelectDocument }) {
 
   const handleUploadSuccess = (result) => {
     setBannerMessage(`Upload complete: ${result.message}`);
-    loadDocuments();
+    loadData();
   };
 
-  // Stats calculation
-  const totalCount = documents.length;
-  const completedCount = documents.filter(d => (d.status || '').toUpperCase() === 'COMPLETED').length;
-  const pendingCount = documents.filter(d => (d.status || '').toUpperCase() === 'PENDING').length;
-  const failedCount = documents.filter(d => (d.status || '').toUpperCase() === 'FAILED').length;
+  // Filter documents based on selected tab
+  const filteredDocuments = documents.filter(doc => {
+    const status = (doc.status || '').toUpperCase();
+    if (selectedFilter === 'ALL') return true;
+    if (selectedFilter === 'COMPLETED') return status === 'COMPLETED';
+    if (selectedFilter === 'REVIEW') return status === 'REVIEW';
+    if (selectedFilter === 'PENDING') return status === 'PENDING' || status === 'PROCESSING';
+    if (selectedFilter === 'FAILED') return status === 'FAILED';
+    return true;
+  });
 
   const formatDate = (dateStr) => {
     if (!dateStr) return '—';
@@ -81,7 +110,7 @@ export default function DocumentsList({ onSelectDocument }) {
         <div className="header-actions">
           <button 
             className="btn btn-secondary" 
-            onClick={loadDocuments} 
+            onClick={loadData} 
             disabled={isLoading || isScanning}
             title="Refresh document list"
           >
@@ -129,62 +158,99 @@ export default function DocumentsList({ onSelectDocument }) {
       {error && (
         <div className="alert alert-error">
           <span>{error}</span>
-          <button className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} onClick={loadDocuments}>
+          <button className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} onClick={loadData}>
             Retry
           </button>
         </div>
       )}
 
-      {/* Summary Cards */}
-      <div className="stats-grid">
-        <div className="stat-card">
+      {/* 5 Top Summary Statistic Cards */}
+      <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('ALL')}>
           <div className="stat-icon" style={{ backgroundColor: '#eff6ff', color: '#2563eb' }}>
             <FileText size={20} />
           </div>
           <div>
-            <div className="stat-value">{totalCount}</div>
+            <div className="stat-value">{stats.total_documents}</div>
             <div className="stat-label">Total Documents</div>
           </div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('COMPLETED')}>
           <div className="stat-icon" style={{ backgroundColor: '#f0fdf4', color: '#16a34a' }}>
             <CheckCircle2 size={20} />
           </div>
           <div>
-            <div className="stat-value">{completedCount}</div>
+            <div className="stat-value">{stats.completed}</div>
             <div className="stat-label">Completed</div>
           </div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('REVIEW')}>
+          <div className="stat-icon" style={{ backgroundColor: '#fff7ed', color: '#c2410c' }}>
+            <HelpCircle size={20} />
+          </div>
+          <div>
+            <div className="stat-value">{stats.review_needed}</div>
+            <div className="stat-label">Review Needed</div>
+          </div>
+        </div>
+
+        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('PENDING')}>
           <div className="stat-icon" style={{ backgroundColor: '#fffbeb', color: '#d97706' }}>
             <Clock size={20} />
           </div>
           <div>
-            <div className="stat-value">{pendingCount}</div>
+            <div className="stat-value">{stats.pending}</div>
             <div className="stat-label">Pending Processing</div>
           </div>
         </div>
 
-        <div className="stat-card">
+        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('FAILED')}>
           <div className="stat-icon" style={{ backgroundColor: '#fef2f2', color: '#dc2626' }}>
             <AlertTriangle size={20} />
           </div>
           <div>
-            <div className="stat-value">{failedCount}</div>
+            <div className="stat-value">{stats.failed}</div>
             <div className="stat-label">Failed</div>
           </div>
         </div>
       </div>
 
-      {/* Main Table Card */}
+      {/* Main Table Card with Filter Tabs */}
       <div className="card">
-        <div className="card-header">
+        <div className="card-header" style={{ flexWrap: 'wrap', gap: '1rem' }}>
           <h2 className="card-title">Processed Documents</h2>
-          <span style={{ fontSize: '0.8125rem', color: '#64748b' }}>
-            Showing {documents.length} document{documents.length !== 1 ? 's' : ''}
-          </span>
+          
+          {/* Status Filter Tabs */}
+          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            {[
+              { id: 'ALL', label: `All (${stats.total_documents})` },
+              { id: 'COMPLETED', label: `Completed (${stats.completed})` },
+              { id: 'REVIEW', label: `Review Needed (${stats.review_needed})` },
+              { id: 'PENDING', label: `Pending (${stats.pending})` },
+              { id: 'FAILED', label: `Failed (${stats.failed})` },
+            ].map(tab => (
+              <button
+                key={tab.id}
+                onClick={() => setSelectedFilter(tab.id)}
+                style={{
+                  padding: '0.375rem 0.75rem',
+                  fontSize: '0.8125rem',
+                  fontWeight: 600,
+                  borderRadius: '0.375rem',
+                  border: '1px solid',
+                  borderColor: selectedFilter === tab.id ? '#2563eb' : '#e2e8f0',
+                  backgroundColor: selectedFilter === tab.id ? '#2563eb' : '#ffffff',
+                  color: selectedFilter === tab.id ? '#ffffff' : '#64748b',
+                  cursor: 'pointer',
+                  transition: 'all 0.15s ease'
+                }}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
         </div>
 
         {isLoading ? (
@@ -192,25 +258,22 @@ export default function DocumentsList({ onSelectDocument }) {
             <div className="spinner spinner-dark" style={{ width: '2.5rem', height: '2.5rem' }} />
             <p className="state-desc" style={{ marginTop: '0.5rem' }}>Loading documents...</p>
           </div>
-        ) : documents.length === 0 ? (
+        ) : filteredDocuments.length === 0 ? (
           <div className="state-box">
             <div className="state-icon">
               <FileText size={32} />
             </div>
-            <h3 className="state-title">No documents found</h3>
+            <h3 className="state-title">No documents match filter</h3>
             <p className="state-desc">
-              Upload a freight bill PDF or drop files into the input folder to begin ingestion.
+              {selectedFilter === 'ALL'
+                ? 'Upload a freight bill PDF or drop files into the input folder to begin ingestion.'
+                : `No documents currently in '${selectedFilter}' status.`}
             </p>
-            <div style={{ display: 'flex', gap: '0.75rem', marginTop: '0.5rem' }}>
-              <button className="btn btn-secondary" onClick={handleScanDirectory} disabled={isScanning}>
-                <FolderSearch size={16} />
-                <span>Scan Input Folder</span>
+            {selectedFilter !== 'ALL' && (
+              <button className="btn btn-secondary" onClick={() => setSelectedFilter('ALL')}>
+                Show All Documents
               </button>
-              <button className="btn btn-primary" onClick={() => setIsUploadOpen(true)}>
-                <Upload size={16} />
-                <span>Upload PDF</span>
-              </button>
-            </div>
+            )}
           </div>
         ) : (
           <div className="table-container">
@@ -224,7 +287,7 @@ export default function DocumentsList({ onSelectDocument }) {
                 </tr>
               </thead>
               <tbody>
-                {documents.map((doc) => (
+                {filteredDocuments.map((doc) => (
                   <tr key={doc.id}>
                     <td>
                       <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
@@ -274,4 +337,3 @@ export default function DocumentsList({ onSelectDocument }) {
     </div>
   );
 }
-

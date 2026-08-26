@@ -30,6 +30,14 @@ export async function fetchDocuments() {
 }
 
 /**
+ * Fetch status count statistics (Total, Completed, Review Needed, Pending, Failed).
+ */
+export async function fetchDocumentStats() {
+  const response = await fetch(`${API_BASE_URL}/documents/stats`);
+  return handleResponse(response);
+}
+
+/**
  * Fetch single document by ID.
  */
 export async function fetchDocumentById(id) {
@@ -72,9 +80,20 @@ export async function reprocessDocument(id) {
 }
 
 /**
+ * Submit manual review corrections for a document.
+ */
+export async function submitDocumentReview(id, extractedData) {
+  const response = await fetch(`${API_BASE_URL}/documents/${id}/review`, {
+    method: 'PUT',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ extracted_data: extractedData }),
+  });
+  return handleResponse(response);
+}
+
+/**
  * Get direct file URL for viewing PDF.
  */
 export function getDocumentFileUrl(id) {
   return `${API_BASE_URL}/documents/${id}/file`;
 }
-

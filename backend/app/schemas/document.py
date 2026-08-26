@@ -34,6 +34,20 @@ class DocumentResponse(DocumentBase):
     model_config = ConfigDict(from_attributes=True)
 
 
+class DocumentReviewRequest(BaseModel):
+    """Schema for submitting manual review corrections."""
+    extracted_data: Dict[str, Any]
+
+
+class DocumentStatsResponse(BaseModel):
+    """Schema for document status count statistics."""
+    total_documents: int
+    completed: int
+    review_needed: int
+    pending: int
+    failed: int
+
+
 class IngestionItemDetail(BaseModel):
     """Detail for individual file ingestion attempt."""
     filename: str
@@ -61,5 +75,3 @@ class DocumentUploadResponse(BaseModel):
     file_hash: Optional[str] = None
     hash: Optional[str] = None
     message: str
-
-
