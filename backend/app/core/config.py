@@ -11,9 +11,9 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     TESTING: bool = False
     
-    # OCR Provider settings: 'local' (default, offline text/OCR extraction) or 'document_ai'
-    OCR_PROVIDER: str = "local"
-    USE_MOCK_OCR: bool = True
+    # OCR Provider: 'document_ai' (default), 'local' (offline fallback), or 'mock'
+    OCR_PROVIDER: str = "document_ai"
+    USE_MOCK_OCR: bool = False
 
     # Image Preprocessing Settings for Handwritten Document Enhancement
     ENABLE_IMAGE_PREPROCESSING: bool = True
@@ -24,6 +24,7 @@ class Settings(BaseSettings):
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     DOCUMENT_AI_LOCATION: str = "us"
     DOCUMENT_AI_PROCESSOR_ID: str = ""
+    GOOGLE_APPLICATION_CREDENTIALS: str = ""
 
     DATABASE_URL: str = "postgresql+psycopg://postgres:password@localhost:5432/freight_ocr"
     INPUT_DOC_LOCATION: str = "./input_doc_location"
@@ -34,6 +35,14 @@ class Settings(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore"
     )
+
+    @property
+    def document_ai_configured(self) -> bool:
+        """True when Document AI project and processor IDs are set."""
+        return bool(
+            (self.GOOGLE_CLOUD_PROJECT_ID or "").strip()
+            and (self.DOCUMENT_AI_PROCESSOR_ID or "").strip()
+        )
 
     @property
     def input_path(self) -> Path:

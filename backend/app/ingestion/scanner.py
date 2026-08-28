@@ -6,34 +6,37 @@ from typing import List, Union
 from sqlalchemy.orm import Session
 
 from app.db.models import Document, DocumentStatus
+from app.ingestion.archive import archive_inbox_file
 from app.ingestion.hasher import calculate_file_hash
 from app.ingestion.validator import validate_pdf
+from app.ingestion.convert import ALLOWED_EXTENSIONS, IMAGE_EXTENSIONS, convert_image_to_pdf
 from app.schemas.document import IngestionBatchResult, IngestionItemDetail
 
 logger = logging.getLogger(__name__)
 
 
 def find_pdf_files(directory_path: Union[str, Path]) -> List[Path]:
-    """Scan directory and return a list of PDF files sorted by filename.
-
-    Args:
-        directory_path: Path to input directory.
-
-    Returns:
-        Sorted list of Path objects pointing to PDF files.
-    """
+    """Scan directory for ingestible documents (PDF and raster images)."""
     path = Path(directory_path)
     if not path.exists() or not path.is_dir():
         logger.warning(f"Input directory does not exist or is not a directory: {path}")
         return []
 
-    # Filter to regular files with .pdf extension (case insensitive)
-    pdf_files = [
+    files = [
         f for f in path.iterdir()
-        if f.is_file() and f.suffix.lower() == ".pdf"
+        if f.is_file()
+        and f.suffix.lower() in ALLOWED_EXTENSIONS
+        and not f.name.lower().startswith("temp_")
     ]
-    pdf_files.sort(key=lambda p: p.name.lower())
-    return pdf_files
+    files = [
+        f for f in files
+        if not (
+            f.suffix.lower() in IMAGE_EXTENSIONS
+            and f.with_suffix(".pdf").exists()
+        )
+    ]
+    files.sort(key=lambda p: p.name.lower())
+    return files
 
 
 def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> IngestionBatchResult:
@@ -53,17 +56,24 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
 
     pdf_files = find_pdf_files(dir_path)
     total_found = len(pdf_files)
-    logger.info(f"Found {total_found} PDF files in '{dir_path}'")
+    logger.info(f"Found {total_found} document(s) in '{dir_path}'")
 
     result = IngestionBatchResult(total_scanned=total_found)
 
     for pdf_path in pdf_files:
         filename = pdf_path.name
-        logger.info(f"Processing document: '{filename}'...")
+        logger.info(
+            f"[{result.ingested_count + result.duplicate_count + result.invalid_count + result.failed_count + 1}"
+            f"/{total_found}] Processing '{filename}'..."
+        )
 
         try:
             # 1. Validate PDF structure
-            validation = validate_pdf(pdf_path)
+            work_path = pdf_path
+            if pdf_path.suffix.lower() in IMAGE_EXTENSIONS:
+                work_path = convert_image_to_pdf(pdf_path)
+
+            validation = validate_pdf(work_path)
             if not validation.is_valid:
                 logger.warning(f"Invalid PDF '{filename}': {validation.error_message}")
                 result.invalid_count += 1
@@ -75,13 +85,16 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
                 continue
 
             # 2. Calculate SHA-256 hash
-            file_hash = calculate_file_hash(pdf_path)
+            file_hash = calculate_file_hash(work_path)
             logger.info(f"Hash calculated for '{filename}': {file_hash}")
 
             # 3. Check for duplicates in Database based on file_hash
             existing_doc = db.query(Document).filter(Document.file_hash == file_hash).first()
             if existing_doc:
                 logger.info(f"Skipping duplicate file: '{filename}' (Matches existing doc ID {existing_doc.id})")
+                archive_inbox_file(pdf_path, dest_name=filename)
+                if work_path != pdf_path:
+                    archive_inbox_file(work_path, dest_name=work_path.name)
                 result.duplicate_count += 1
                 result.items.append(IngestionItemDetail(
                     filename=filename,
@@ -96,7 +109,7 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
             new_doc = Document(
                 filename=filename,
                 file_hash=file_hash,
-                file_path=str(pdf_path),
+                file_path=str(work_path),
                 status=DocumentStatus.PENDING
             )
             db.add(new_doc)
@@ -111,6 +124,9 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
             except Exception as proc_err:
                 logger.error(f"OCR processing failed during ingestion of '{filename}': {proc_err}", exc_info=True)
                 final_status = "FAILED"
+
+            if work_path != pdf_path:
+                archive_inbox_file(pdf_path, dest_name=filename)
 
             logger.info(f"New document ingested and processed successfully: '{filename}' (ID: {new_doc.id}, status: {final_status})")
             result.ingested_count += 1

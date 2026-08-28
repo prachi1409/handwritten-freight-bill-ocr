@@ -36,7 +36,7 @@ def test_invalid_file_extension_rejection(client):
     )
 
     assert response.status_code == 400
-    assert "Only PDF files (.pdf) are supported" in response.json()["detail"]
+    assert "Supported types" in response.json()["detail"]
 
 
 def test_corrupted_pdf_rejection(client):

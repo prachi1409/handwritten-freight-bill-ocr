@@ -21,7 +21,7 @@ def test_non_pdf_extension_fails_validation(tmp_path):
     result = validate_pdf(txt_path)
 
     assert result.is_valid is False
-    assert "Expected '.pdf'" in result.error_message
+    assert "PDF" in result.error_message or "extension" in result.error_message.lower()
 
 
 def test_missing_file_fails_validation(tmp_path):

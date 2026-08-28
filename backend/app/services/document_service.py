@@ -5,8 +5,9 @@ import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from uuid import UUID
 from typing import Any, Dict, List, Optional
+from uuid import UUID
+from sqlalchemy import String, cast, or_
 from fastapi import UploadFile, HTTPException, status
 from sqlalchemy.orm import Session
 
@@ -14,12 +15,23 @@ from app.core.config import settings
 from app.db.models import Document, DocumentStatus
 from app.ingestion.hasher import calculate_file_hash
 from app.ingestion.validator import validate_pdf
+from app.ingestion.convert import ALLOWED_EXTENSIONS, ensure_pdf
 from app.ingestion.scanner import process_ingestion_batch
+from app.ingestion.archive import archive_inbox_file
 from app.ocr.factory import get_ocr_processor
 from app.ocr.normalizer import normalize_freight_data, validate_extraction_status
 from app.schemas.document import IngestionBatchResult, DocumentUploadResponse, DocumentStatsResponse
 
 logger = logging.getLogger(__name__)
+
+
+def _cleanup_upload_temps(temp_path: Path) -> None:
+    """Remove a failed upload and any PDF converted from it."""
+    if temp_path.exists():
+        temp_path.unlink(missing_ok=True)
+    leftover = temp_path.with_suffix(".pdf")
+    if leftover.exists() and leftover.name.lower().startswith("temp_"):
+        leftover.unlink(missing_ok=True)
 
 
 class DocumentService:
@@ -42,8 +54,12 @@ class DocumentService:
         logger.info(f"Received file upload request: '{filename}'")
 
         # 1. Validate file extension
-        if not filename or not filename.lower().endswith(".pdf"):
-            msg = f"Invalid file extension for '{filename}'. Only PDF files (.pdf) are supported."
+        suffix = Path(filename).suffix.lower()
+        if not filename or suffix not in ALLOWED_EXTENSIONS:
+            msg = (
+                f"Invalid file extension for '{filename}'. "
+                "Supported types: PDF, JPG, PNG, TIFF."
+            )
             logger.warning(msg)
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -53,7 +69,7 @@ class DocumentService:
         # 2. Save stream to temporary file in input directory
         input_dir = settings.input_path
         input_dir.mkdir(parents=True, exist_ok=True)
-        temp_path = input_dir / f"temp_{uuid.uuid4().hex}.pdf"
+        temp_path = input_dir / f"temp_{uuid.uuid4().hex}{suffix}"
 
         try:
             with open(temp_path, "wb") as buffer:
@@ -69,17 +85,20 @@ class DocumentService:
 
         try:
             # 3. Validate PDF document structure using PyMuPDF utility
-            validation = validate_pdf(temp_path)
+            pdf_path = ensure_pdf(temp_path)
+            validation = validate_pdf(pdf_path)
             if not validation.is_valid:
                 logger.warning(f"Uploaded file '{filename}' failed PDF validation: {validation.error_message}")
                 temp_path.unlink(missing_ok=True)
+                if pdf_path != temp_path:
+                    pdf_path.unlink(missing_ok=True)
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid PDF file: {validation.error_message}"
                 )
 
             # 4. Calculate SHA-256 hash using chunked hasher utility
-            file_hash = calculate_file_hash(temp_path)
+            file_hash = calculate_file_hash(pdf_path)
             logger.info(f"Calculated SHA-256 hash for uploaded file '{filename}': {file_hash}")
 
             # 5. Check if document already exists in DB based on file_hash
@@ -87,6 +106,8 @@ class DocumentService:
             if existing_doc:
                 logger.info(f"Duplicate document detected: '{filename}' matches existing document ID {existing_doc.id}")
                 temp_path.unlink(missing_ok=True)
+                if pdf_path != temp_path:
+                    pdf_path.unlink(missing_ok=True)
                 return DocumentUploadResponse(
                     document_id=existing_doc.id,
                     filename=existing_doc.filename,
@@ -97,13 +118,16 @@ class DocumentService:
                 )
 
             # 6. Save file permanently in INPUT_DOC_LOCATION
-            target_path = input_dir / filename
+            stored_name = Path(filename).stem + ".pdf"
+            target_path = input_dir / stored_name
             if target_path.exists():
-                target_path = input_dir / f"{file_hash[:8]}_{filename}"
+                target_path = input_dir / f"{file_hash[:8]}_{stored_name}"
 
-            temp_path.replace(target_path)
+            if pdf_path != target_path:
+                pdf_path.replace(target_path)
+            if temp_path.exists() and temp_path != target_path:
+                temp_path.unlink(missing_ok=True)
 
-            # 7. Create database record in PENDING status
             new_doc = Document(
                 filename=filename,
                 file_hash=file_hash,
@@ -130,12 +154,10 @@ class DocumentService:
             )
 
         except HTTPException:
-            if temp_path.exists():
-                temp_path.unlink(missing_ok=True)
+            _cleanup_upload_temps(temp_path)
             raise
         except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink(missing_ok=True)
+            _cleanup_upload_temps(temp_path)
             db.rollback()
             logger.error(f"Unexpected error during document upload '{filename}': {e}", exc_info=True)
             raise HTTPException(
@@ -167,11 +189,25 @@ class DocumentService:
         return db.query(Document).filter(Document.file_hash == file_hash).first()
 
     @staticmethod
-    def list_documents(db: Session, skip: int = 0, limit: int = 100) -> List[Document]:
-        """List documents ordered by creation date descending."""
+    def list_documents(
+        db: Session,
+        skip: int = 0,
+        limit: int = 100,
+        q: Optional[str] = None,
+    ) -> List[Document]:
+        """List documents ordered by creation date descending, optionally filtered by search text."""
+        query = db.query(Document)
+        if q and q.strip():
+            term = f"%{q.strip()}%"
+            query = query.filter(
+                or_(
+                    Document.filename.ilike(term),
+                    cast(Document.extracted_data, String).ilike(term),
+                    Document.error_message.ilike(term),
+                )
+            )
         return (
-            db.query(Document)
-            .order_by(Document.created_at.desc())
+            query.order_by(Document.created_at.desc())
             .offset(skip)
             .limit(limit)
             .all()
@@ -227,6 +263,10 @@ class DocumentService:
             doc.status = final_status
             doc.processed_at = datetime.now(timezone.utc)
             doc.error_message = review_msg if final_status == DocumentStatus.REVIEW else None
+
+            archived = archive_inbox_file(file_path, dest_name=Path(doc.file_path).name)
+            if archived is not None:
+                doc.file_path = str(archived)
 
             db.commit()
             db.refresh(doc)

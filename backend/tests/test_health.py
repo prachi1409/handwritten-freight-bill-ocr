@@ -5,5 +5,7 @@ def test_health_check_endpoint(client):
     """Verify GET /health returns 200 OK and status ok."""
     response = client.get("/health")
     assert response.status_code == 200
-    assert response.json() == {"status": "ok"}
+    data = response.json()
+    assert data["status"] == "ok"
+    assert "ocr_provider" in data
 

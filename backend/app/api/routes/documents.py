@@ -2,7 +2,7 @@
 
 import logging
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from fastapi.responses import FileResponse
@@ -26,10 +26,11 @@ router = APIRouter(prefix="/documents", tags=["Documents"])
 def list_documents(
     skip: int = 0,
     limit: int = 100,
+    q: Optional[str] = None,
     db: Session = Depends(get_db)
 ) -> List[DocumentResponse]:
     """List all documents."""
-    return DocumentService.list_documents(db=db, skip=skip, limit=limit)
+    return DocumentService.list_documents(db=db, skip=skip, limit=limit, q=q)
 
 
 @router.get(
@@ -66,11 +67,11 @@ def get_document(
     "/upload",
     response_model=DocumentUploadResponse,
     status_code=status.HTTP_200_OK,
-    summary="Upload Freight Bill PDF Document",
-    description="Upload a handwritten freight bill PDF document for ingestion, validation, and SHA-256 duplicate checking."
+    summary="Upload Freight Bill Document",
+    description="Upload a freight bill as PDF, JPG, PNG, or TIFF. Images are converted to PDF before OCR.",
 )
 def upload_document(
-    file: UploadFile = File(..., description="Handwritten Freight Bill PDF file"),
+    file: UploadFile = File(..., description="Freight bill PDF or scan image"),
     db: Session = Depends(get_db)
 ) -> DocumentUploadResponse:
     """Upload a PDF document."""

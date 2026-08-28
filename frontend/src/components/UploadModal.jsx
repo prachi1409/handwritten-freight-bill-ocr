@@ -12,8 +12,8 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
   const handleFileChange = (e) => {
     if (e.target.files && e.target.files[0]) {
       const file = e.target.files[0];
-      if (!file.name.toLowerCase().endsWith('.pdf')) {
-        setError('Only PDF files (.pdf) are supported.');
+      if (!file.name.toLowerCase().match(/\.(pdf|jpe?g|png|tiff?)$/)) {
+        setError('Supported types: PDF, JPG, PNG, TIFF.');
         setSelectedFile(null);
         return;
       }
@@ -26,8 +26,8 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
     e.preventDefault();
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
       const file = e.dataTransfer.files[0];
-      if (!file.name.toLowerCase().endsWith('.pdf')) {
-        setError('Only PDF files (.pdf) are supported.');
+      if (!file.name.toLowerCase().match(/\.(pdf|jpe?g|png|tiff?)$/)) {
+        setError('Supported types: PDF, JPG, PNG, TIFF.');
         setSelectedFile(null);
         return;
       }
@@ -58,7 +58,7 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
     <div className="modal-overlay">
       <div className="modal-card">
         <div className="modal-header">
-          <h3 style={{ fontWeight: 600, fontSize: '1.125rem' }}>Upload Freight Bill PDF</h3>
+          <h3 style={{ fontWeight: 600, fontSize: '1.125rem' }}>Upload Freight Bill</h3>
           <button 
             onClick={onClose} 
             disabled={isUploading}
@@ -85,7 +85,7 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
           >
             <input 
               type="file" 
-              accept=".pdf" 
+              accept=".pdf,.jpg,.jpeg,.png,.tif,.tiff" 
               id="fileInput" 
               style={{ display: 'none' }} 
               onChange={handleFileChange}
@@ -95,12 +95,12 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
                 <Upload size={24} color="#2563eb" />
               </div>
               <p style={{ fontWeight: 600, marginBottom: '0.25rem' }}>
-                {selectedFile ? selectedFile.name : 'Click to select or drag & drop PDF'}
+                {selectedFile ? selectedFile.name : 'Click to select or drag & drop a file'}
               </p>
               <p style={{ fontSize: '0.8125rem', color: '#64748b' }}>
                 {selectedFile 
                   ? `${(selectedFile.size / 1024).toFixed(1)} KB` 
-                  : 'Supported formats: PDF documents'}
+                  : 'Supported formats: PDF, JPG, PNG, TIFF'}
               </p>
             </label>
           </div>

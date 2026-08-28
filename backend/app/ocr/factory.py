@@ -11,37 +11,47 @@ logger = logging.getLogger(__name__)
 
 
 def get_ocr_processor() -> BaseOCRProcessor:
-    """Return the configured OCR Processor implementation.
+    """Return the OCR processor for the current environment.
 
-    Checks OCR_PROVIDER setting ('local' vs 'document_ai'). Defaults to LocalOCRProcessor
-    when billing is not enabled or if Google Cloud Document AI credentials fail.
+    Production default is Google Document AI. Local OCR is used for unit tests
+    and as a fallback when GCP credentials or the API are unavailable.
 
-    Returns:
-        Instance implementing BaseOCRProcessor interface.
+    OCR_PROVIDER values:
+        document_ai — Google Document AI (default)
+        local — offline PyMuPDF extraction
+        mock — canned freight-bill payload (dev only)
     """
-    provider = (getattr(settings, "OCR_PROVIDER", "local") or "local").lower()
+    provider = (settings.OCR_PROVIDER or "document_ai").strip().lower()
 
-    if provider == "local" or getattr(settings, "USE_MOCK_OCR", False):
+    # Unit tests must not call Google Cloud. conftest sets TESTING=True.
+    if settings.TESTING:
+        logger.info("TESTING=true: using Local OCR Processor")
+        return LocalOCRProcessor()
+
+    if provider == "mock" or (settings.USE_MOCK_OCR and not settings.document_ai_configured):
+        logger.info("Using Mock Document AI Processor")
+        return MockDocumentAIProcessor()
+
+    if provider == "local":
         logger.info("Using Local OCR Processor (OCR_PROVIDER='local')")
         return LocalOCRProcessor()
 
-    if provider == "document_ai":
-        if not settings.GOOGLE_CLOUD_PROJECT_ID or not settings.DOCUMENT_AI_PROCESSOR_ID:
-            logger.warning(
-                "GCP Project ID or Processor ID missing in configuration. "
-                "Falling back to Local OCR Processor."
-            )
-            return LocalOCRProcessor()
+    # document_ai (default) and any unknown provider: prefer Google when configured
+    if not settings.document_ai_configured:
+        logger.warning(
+            "OCR_PROVIDER is '%s' but GOOGLE_CLOUD_PROJECT_ID or "
+            "DOCUMENT_AI_PROCESSOR_ID is missing. Falling back to Local OCR Processor.",
+            provider,
+        )
+        return LocalOCRProcessor()
 
-        try:
-            logger.info("Initializing Google Document AI Processor...")
-            return GoogleDocumentAIProcessor()
-        except Exception as e:
-            logger.warning(
-                f"Failed to initialize Google Document AI Processor ({e}). "
-                "Falling back to Local OCR Processor."
-            )
-            return LocalOCRProcessor()
-
-    logger.info("Defaulting to Local OCR Processor.")
-    return LocalOCRProcessor()
+    try:
+        logger.info("Initializing Google Document AI Processor...")
+        return GoogleDocumentAIProcessor()
+    except Exception as e:
+        logger.warning(
+            "Failed to initialize Google Document AI Processor (%s). "
+            "Falling back to Local OCR Processor.",
+            e,
+        )
+        return LocalOCRProcessor()

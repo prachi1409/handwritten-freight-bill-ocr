@@ -38,9 +38,18 @@ def validate_pdf(file_path: Union[str, Path]) -> ValidationResult:
         return ValidationResult(is_valid=False, error_message=msg)
 
     if path.suffix.lower() != ".pdf":
-        msg = f"Invalid extension '{path.suffix}'. Expected '.pdf'"
-        logger.warning(f"File '{path.name}': {msg}")
-        return ValidationResult(is_valid=False, error_message=msg)
+        from app.ingestion.convert import IMAGE_EXTENSIONS, convert_image_to_pdf
+        if path.suffix.lower() in IMAGE_EXTENSIONS:
+            try:
+                path = convert_image_to_pdf(path)
+            except Exception as e:
+                msg = f"Failed to convert image to PDF: {e}"
+                logger.warning("File '%s': %s", path.name, msg)
+                return ValidationResult(is_valid=False, error_message=msg)
+        else:
+            msg = f"Invalid extension '{path.suffix}'. Expected PDF, JPG, PNG, or TIFF"
+            logger.warning(f"File '{path.name}': {msg}")
+            return ValidationResult(is_valid=False, error_message=msg)
 
     doc = None
     try:

@@ -2,7 +2,7 @@
  * API client helper for Handwritten Freight Bill OCR backend.
  */
 
-const API_BASE_URL = '/api/v1';
+const API_BASE_URL = 'http://127.0.0.1:8000/api/v1';
 
 /**
  * Handle HTTP response and parse JSON or throw meaningful error.
@@ -24,8 +24,13 @@ async function handleResponse(response) {
 /**
  * Fetch all ingested documents.
  */
-export async function fetchDocuments() {
-  const response = await fetch(`${API_BASE_URL}/documents`);
+export async function fetchDocuments(query = '') {
+  const params = new URLSearchParams();
+  if (query && query.trim()) {
+    params.set('q', query.trim());
+  }
+  const suffix = params.toString() ? `?${params.toString()}` : '';
+  const response = await fetch(`${API_BASE_URL}/documents${suffix}`);
   return handleResponse(response);
 }
 
@@ -52,10 +57,17 @@ export async function uploadDocument(file) {
   const formData = new FormData();
   formData.append('file', file);
 
-  const response = await fetch(`${API_BASE_URL}/documents/upload`, {
-    method: 'POST',
-    body: formData,
-  });
+  let response;
+  try {
+    response = await fetch(`${API_BASE_URL}/documents/upload`, {
+      method: 'POST',
+      body: formData,
+    });
+  } catch (err) {
+    throw new Error(
+      'Cannot reach the API at http://127.0.0.1:8000. Make sure the backend is running (python -m app.main).'
+    );
+  }
   return handleResponse(response);
 }
 

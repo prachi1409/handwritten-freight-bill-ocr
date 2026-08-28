@@ -1,7 +1,9 @@
 """Database initialization and session management."""
 
 import logging
-from typing import Generator
+from typing import Any, Dict, Generator
+from urllib.parse import parse_qs, urlparse
+
 from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, sessionmaker, Session
 from app.core.config import settings
@@ -14,9 +16,21 @@ class Base(DeclarativeBase):
     pass
 
 
-connect_args = {}
+def _postgres_connect_args(database_url: str) -> Dict[str, Any]:
+    """Build psycopg connect args for local vs hosted Postgres (e.g. Supabase)."""
+    args: Dict[str, Any] = {"connect_timeout": 15}
+    parsed = urlparse(database_url.replace("postgresql+psycopg://", "postgresql://", 1))
+    host = (parsed.hostname or "").lower()
+    query = parse_qs(parsed.query)
+    is_local = host in ("localhost", "127.0.0.1", "::1")
+    if not is_local and "sslmode" not in query:
+        args["sslmode"] = "require"
+    return args
+
+
+connect_args: Dict[str, Any] = {}
 if settings.DATABASE_URL.startswith("postgresql"):
-    connect_args["connect_timeout"] = 3
+    connect_args = _postgres_connect_args(settings.DATABASE_URL)
 
 engine = create_engine(
     settings.DATABASE_URL,

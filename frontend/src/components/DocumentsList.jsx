@@ -19,13 +19,14 @@ export default function DocumentsList({ onSelectDocument }) {
   const [error, setError] = useState(null);
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState(null);
+  const [searchText, setSearchText] = useState('');
 
   const loadData = async () => {
     setIsLoading(true);
     setError(null);
     try {
       const [docsData, statsData] = await Promise.all([
-        fetchDocuments(),
+        fetchDocuments(searchText),
         fetchDocumentStats().catch(() => null)
       ]);
       setDocuments(docsData);
@@ -108,11 +109,25 @@ export default function DocumentsList({ onSelectDocument }) {
         </div>
 
         <div className="header-actions">
+          <input
+            type="search"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') loadData(); }}
+            placeholder="Search bill #, filename..."
+            style={{
+              minWidth: '200px',
+              padding: '0.45rem 0.75rem',
+              border: '1px solid #e2e8f0',
+              borderRadius: '0.375rem',
+              fontSize: '0.875rem'
+            }}
+          />
           <button 
             className="btn btn-secondary" 
             onClick={loadData} 
             disabled={isLoading || isScanning}
-            title="Refresh document list"
+            title="Search and refresh document list"
           >
             <RefreshCw size={16} className={isLoading ? 'spinner-icon' : ''} />
             <span>Refresh</span>
@@ -137,7 +152,7 @@ export default function DocumentsList({ onSelectDocument }) {
             onClick={() => setIsUploadOpen(true)}
           >
             <Upload size={16} />
-            <span>Upload PDF</span>
+            <span>Upload</span>
           </button>
         </div>
       </div>

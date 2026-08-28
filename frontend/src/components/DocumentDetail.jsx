@@ -201,9 +201,19 @@ export default function DocumentDetail({ documentId, onBack }) {
   const lineItems = Array.isArray(extractedData.line_items) ? extractedData.line_items : [];
   const rawText = extractedData.raw_text || rawOcr.raw_text || '';
 
+  const hiddenScalarKeys = new Set([
+    'line_items', 'raw_text', 'raw_ocr', 'reviewed', 'reviewed_at',
+    'manually_corrected', 'document_type', 'scan_quality',
+  ]);
   const scalarFields = Object.entries(extractedData).filter(
-    ([key]) => key !== 'line_items' && key !== 'raw_text' && key !== 'raw_ocr' && key !== 'reviewed' && key !== 'reviewed_at' && key !== 'manually_corrected'
+    ([key]) => !hiddenScalarKeys.has(key)
   );
+  const intel = rawOcr.document_intelligence || {};
+  const layout = rawOcr.layout || {};
+  const layoutBlocks = Array.isArray(layout.blocks) ? layout.blocks : [];
+  const documentType = intel.document_type || extractedData.document_type || '—';
+  const qualityScore = intel.quality_score ?? extractedData.scan_quality;
+  const pageCount = intel.page_count || rawOcr.page_count || '—';
 
   const editableKeys = [
     { key: 'bill_number', label: 'Bill Number', required: true },
@@ -353,6 +363,33 @@ export default function DocumentDetail({ documentId, onBack }) {
               {doc.confidence !== null && doc.confidence !== undefined ? `${(doc.confidence * 100).toFixed(1)}%` : 'N/A'}
             </div>
           </div>
+
+          <div>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.25rem' }}>
+              Document Type
+            </div>
+            <div style={{ fontSize: '0.875rem', fontWeight: 500, color: '#0f172a' }}>
+              {String(documentType).replace(/_/g, ' ')}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.25rem' }}>
+              Scan Quality
+            </div>
+            <div style={{ fontSize: '0.875rem', fontWeight: 500, color: '#0f172a' }}>
+              {qualityScore !== null && qualityScore !== undefined ? `${Math.round(Number(qualityScore) * 100)}%` : 'N/A'}
+            </div>
+          </div>
+
+          <div>
+            <div style={{ fontSize: '0.75rem', fontWeight: 600, color: '#64748b', textTransform: 'uppercase', marginBottom: '0.25rem' }}>
+              Pages
+            </div>
+            <div style={{ fontSize: '0.875rem', fontWeight: 500, color: '#0f172a' }}>
+              {pageCount}
+            </div>
+          </div>
         </div>
       </div>
 
@@ -471,6 +508,25 @@ export default function DocumentDetail({ documentId, onBack }) {
                     <pre className="mono" style={{ backgroundColor: '#0f172a', color: '#f8fafc', padding: '1rem', borderRadius: '0.5rem', marginTop: '0.75rem', overflowX: 'auto', fontSize: '0.75rem', whiteSpace: 'pre-wrap' }}>
                       {rawText}
                     </pre>
+                  </details>
+                </div>
+              )}
+
+              {layoutBlocks.length > 0 && (
+                <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid #e2e8f0', backgroundColor: '#f8fafc' }}>
+                  <details>
+                    <summary style={{ cursor: 'pointer', fontSize: '0.8125rem', fontWeight: 600, color: '#2563eb', display: 'inline-flex', alignItems: 'center', gap: '0.375rem' }}>
+                      <AlignLeft size={14} />
+                      <span>View Layout Blocks ({layoutBlocks.length})</span>
+                    </summary>
+                    <div style={{ marginTop: '0.75rem', maxHeight: '240px', overflowY: 'auto' }}>
+                      {layoutBlocks.map((block, idx) => (
+                        <div key={idx} className="mono" style={{ fontSize: '0.75rem', color: '#334155', padding: '0.375rem 0', borderBottom: '1px solid #e2e8f0' }}>
+                          <span style={{ color: '#64748b' }}>#{block.reading_order || idx + 1} p{block.page || 1}</span>
+                          {' '}{block.text}
+                        </div>
+                      ))}
+                    </div>
                   </details>
                 </div>
               )}
