@@ -1,10 +1,11 @@
-"""Pytest configuration and shared fixtures."""
+"""Pytest configuration and shared isolated fixtures."""
 
-import pymupdf as fitz  # PyMuPDF
+import pymupdf as fitz
 import pytest
 from pathlib import Path
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
+from sqlalchemy.pool import StaticPool
 from fastapi.testclient import TestClient
 
 from app.core.config import settings
@@ -14,7 +15,13 @@ from app.db.database import Base, get_db
 from app.main import app
 
 
-from sqlalchemy.pool import StaticPool
+@pytest.fixture(autouse=True)
+def isolate_test_storage(tmp_path, monkeypatch):
+    """Ensure all tests use an isolated temporary storage directory that cleans up automatically."""
+    test_storage = tmp_path / "test_storage"
+    test_storage.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(settings, "STORAGE_LOCATION", str(test_storage))
+    monkeypatch.setattr(settings, "TESTING", True)
 
 
 @pytest.fixture(scope="function")

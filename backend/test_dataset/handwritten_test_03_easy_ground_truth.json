@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_03_easy.pdf",
+  "difficulty": "Easy",
+  "font": "Segoe Print",
+  "ground_truth": {
+    "bill_number": "FB-30063",
+    "invoice_number": "INV-30063-C",
+    "bill_date": "2026-08-27",
+    "carrier": "Titan Global Freight",
+    "consignor": "Gamma Component Inc",
+    "consignee": "Zeta Retail Logistics",
+    "origin": "Atlanta, GA",
+    "destination": "Charlotte, NC",
+    "commodity_description": "Aluminum Parts",
+    "quantity": "25 Cartons",
+    "weight": "19,400 lbs",
+    "freight_amount": "$1,550.00",
+    "fuel_surcharge": "$155.00",
+    "handling_charge": "$60.00",
+    "total_amount": "$1,765.00",
+    "vehicle_number": "GA-5543",
+    "driver_name": "Thomas Miller",
+    "pickup_time": "07:45 AM",
+    "delivery_time": "01:30 PM",
+    "special_instructions": "Liftgate required at destination"
+  }
+}

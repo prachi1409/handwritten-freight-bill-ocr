@@ -62,10 +62,12 @@ def test_validate_extraction_status_completed():
     """Valid complete freight bill results in DocumentStatus.COMPLETED."""
     data = {
         "bill_number": "HB-78421",
+        "invoice_number": "INV-HB-78421",
         "consignor": "Sharma Industrial Supply",
         "consignee": "Metro Warehouse",
         "origin": "Kanpur",
         "destination": "Delhi",
+        "freight_amount": "$3,450.00",
         "total_amount": "$3,450.00"
     }
     status, warnings = validate_extraction_status(data, confidence=0.90)
@@ -78,8 +80,12 @@ def test_validate_extraction_status_review_low_confidence():
     """Low confidence OCR results in DocumentStatus.REVIEW."""
     data = {
         "bill_number": "HB-78421",
+        "invoice_number": "INV-HB-78421",
         "consignor": "Sharma Industrial Supply",
         "consignee": "Metro Warehouse",
+        "origin": "Kanpur",
+        "destination": "Delhi",
+        "freight_amount": "$3,450.00",
         "total_amount": "$3,450.00"
     }
     status, warnings = validate_extraction_status(data, confidence=0.50)
@@ -103,15 +109,17 @@ def test_validate_extraction_status_review_missing_critical_fields():
 
 
 def test_validate_extraction_status_missing_optional_field_still_completed():
-    """Missing optional fields (e.g. invoice_number or vehicle_number) still allows COMPLETED status."""
+    """Missing optional fields (e.g. carrier or vehicle_number) still allows COMPLETED status."""
     data = {
         "bill_number": "HB-78421",
-        "invoice_number": None,  # optional
+        "invoice_number": "INV-HB-78421",
         "consignor": "Sharma Industrial Supply",
         "consignee": "Metro Warehouse",
         "origin": "Kanpur Industrial Area, UP",
         "destination": "Delhi Hub",
-        "total_amount": "$3,450.00"
+        "freight_amount": "$3,450.00",
+        "total_amount": "$3,450.00",
+        "vehicle_number": None  # optional
     }
     status, warnings = validate_extraction_status(data, confidence=0.88)
 
@@ -123,6 +131,7 @@ def test_line_items_amount_mismatch_flags_review():
     """Verify mismatch between line item amounts sum and total_amount flags document for REVIEW."""
     data = {
         "bill_number": "HB-78421",
+        "invoice_number": "INV-HB-78421",
         "consignor": "Sharma Industrial Supply",
         "consignee": "Metro Warehouse",
         "origin": "Kanpur",

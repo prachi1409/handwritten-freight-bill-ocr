@@ -13,6 +13,7 @@ backend/credentials/
 !package.json
 !package-lock.json
 !tsconfig.json
+!*_ground_truth.json
 
 # Python
 __pycache__/
@@ -23,3 +24,10 @@ __pycache__/
 # Build
 dist/
 build/
+
+# Generated runtime documents & storage
+storage/
+backend/storage/
+backend/processed_documents/*.pdf
+input_doc_location/*.pdf
+backend/test_dataset/*.pdf

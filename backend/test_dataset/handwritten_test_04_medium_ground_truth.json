@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_04_medium.pdf",
+  "difficulty": "Medium",
+  "font": "Ink Free",
+  "ground_truth": {
+    "bill_number": "HB-40084",
+    "invoice_number": "INV-HB-40084",
+    "bill_date": "2026-08-28",
+    "carrier": "Midwest Transport LLC",
+    "consignor": "Pinnacle Metals Corp",
+    "consignee": "Vanguard Distribution",
+    "origin": "Indianapolis, IN",
+    "destination": "Columbus, OH",
+    "commodity_description": "Industrial Tubing",
+    "quantity": "15 Bundles",
+    "weight": "32,450 lbs",
+    "freight_amount": "$1,820.50",
+    "fuel_surcharge": "$182.05",
+    "handling_charge": "$75.00",
+    "total_amount": "$2,077.55",
+    "vehicle_number": "IN-9104",
+    "driver_name": "David Reynolds",
+    "pickup_time": "09:30 AM",
+    "delivery_time": "04:15 PM",
+    "special_instructions": "Do not double stack pallets"
+  }
+}

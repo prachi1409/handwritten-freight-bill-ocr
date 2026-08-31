@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_09_hard.pdf",
+  "difficulty": "Hard",
+  "font": "Ink Free",
+  "ground_truth": {
+    "bill_number": "FB-92701",
+    "invoice_number": "INV-92701-Z",
+    "bill_date": "2026-09-02",
+    "carrier": "Z1 Transport Services",
+    "consignor": "Z2 Plastics Corp",
+    "consignee": "17 Packaging Plant",
+    "origin": "Louisville, KY",
+    "destination": "Cincinnati, OH",
+    "commodity_description": "Plastic Resin Pellets",
+    "quantity": "50 Bags",
+    "weight": "22,100 lbs",
+    "freight_amount": "$1,270.00",
+    "fuel_surcharge": "$127.00",
+    "handling_charge": "$40.00",
+    "total_amount": "$1,437.00",
+    "vehicle_number": "KY-2719",
+    "driver_name": "Steven King",
+    "pickup_time": "09:15 AM",
+    "delivery_time": "04:00 PM",
+    "special_instructions": "Pneumatic unloader needed"
+  }
+}

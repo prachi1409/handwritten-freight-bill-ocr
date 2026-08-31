@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_02_easy.pdf",
+  "difficulty": "Easy",
+  "font": "Lucida Handwriting",
+  "ground_truth": {
+    "bill_number": "FB-20042",
+    "invoice_number": "INV-20042-B",
+    "bill_date": "2026-08-26",
+    "carrier": "Summit Line Haul",
+    "consignor": "Beta Chemical Labs",
+    "consignee": "Epsilon Storage Hub",
+    "origin": "Dallas, TX",
+    "destination": "Houston, TX",
+    "commodity_description": "Lab Supplies",
+    "quantity": "30 Crates",
+    "weight": "12,800 lbs",
+    "freight_amount": "$980.00",
+    "fuel_surcharge": "$98.00",
+    "handling_charge": "$45.00",
+    "total_amount": "$1,123.00",
+    "vehicle_number": "TX-1102",
+    "driver_name": "James Wilson",
+    "pickup_time": "09:00 AM",
+    "delivery_time": "03:45 PM",
+    "special_instructions": "Keep dry - handle with care"
+  }
+}

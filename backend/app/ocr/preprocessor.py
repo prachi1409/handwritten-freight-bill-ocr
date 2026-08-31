@@ -1,10 +1,10 @@
-"""Image preprocessing for handwritten document OCR."""
+"""Image preprocessing for handwritten document OCR. Preserves high resolution image fidelity and handwritten marks."""
 
 import logging
 from pathlib import Path
 from typing import List, Tuple
 
-from PIL import Image, ImageEnhance, ImageFilter, ImageOps
+from PIL import Image, ImageOps
 import pymupdf as fitz
 
 from app.core.config import settings
@@ -47,7 +47,7 @@ def deskew_image(img: Image.Image, max_angle: float = 12.0) -> Tuple[Image.Image
     if abs(best_angle) < 0.5:
         return img, 0.0
 
-    fill = 255 if img.mode == "L" else (255, 255, 255)
+    fill = (255, 255, 255) if img.mode == "RGB" else 255
     corrected = img.rotate(
         best_angle,
         resample=Image.Resampling.BICUBIC,
@@ -59,28 +59,24 @@ def deskew_image(img: Image.Image, max_angle: float = 12.0) -> Tuple[Image.Image
 
 
 def enhance_page_image(img: Image.Image) -> Tuple[Image.Image, float]:
-    """Grayscale, optional deskew, contrast, sharpen, and mild denoise."""
+    """Deskew if needed while maintaining raw 300 DPI pixel fidelity for handwritten punctuation."""
     deskew_angle = 0.0
-    work = img.convert("L")
+    work = img
 
     if getattr(settings, "DESKEW_IMAGE", True):
         work, deskew_angle = deskew_image(work)
 
-    contrast_factor = getattr(settings, "CONTRAST_ENHANCEMENT", 1.2)
-    work = ImageEnhance.Contrast(work).enhance(contrast_factor)
-    work = work.filter(ImageFilter.SHARPEN)
-    work = work.filter(ImageFilter.MedianFilter(size=3))
-    return work.convert("RGB"), deskew_angle
+    return work, deskew_angle
 
 
 def preprocess_pdf_pages(file_path: Path) -> List[Image.Image]:
-    """Render PDF pages at TARGET_DPI and return enhanced RGB images."""
+    """Render PDF pages at TARGET_DPI and return high-fidelity RGB images."""
     images, _angles = preprocess_pdf_pages_with_meta(file_path)
     return images
 
 
 def preprocess_pdf_pages_with_meta(file_path: Path) -> Tuple[List[Image.Image], List[float]]:
-    """Like preprocess_pdf_pages, also returning per-page deskew angles."""
+    """Render PDF pages at TARGET_DPI and return page images with deskew metadata."""
     path = Path(file_path)
     if not path.exists():
         raise FileNotFoundError(f"PDF document file not found for preprocessing: '{path}'")
@@ -106,14 +102,6 @@ def preprocess_pdf_pages_with_meta(file_path: Path) -> Tuple[List[Image.Image], 
 
             processed_images.append(img)
             deskew_angles.append(angle)
-            logger.info(
-                "Page %s/%s preprocessed (%sx%s px, deskew %.1f deg).",
-                page_num,
-                len(doc),
-                img.width,
-                img.height,
-                angle,
-            )
 
         doc.close()
 

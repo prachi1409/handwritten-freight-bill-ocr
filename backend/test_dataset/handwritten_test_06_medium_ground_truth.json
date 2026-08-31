@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_06_medium.pdf",
+  "difficulty": "Medium",
+  "font": "Segoe Script",
+  "ground_truth": {
+    "bill_number": "HB-60126",
+    "invoice_number": "INV-60126-M",
+    "bill_date": "2026-08-30",
+    "carrier": "Overland Express LLC",
+    "consignor": "Westfield Auto Parts",
+    "consignee": "Central Assembly Plant",
+    "origin": "Detroit, MI",
+    "destination": "Cleveland, OH",
+    "commodity_description": "Engine Components",
+    "quantity": "22 Pallets",
+    "weight": "28,900 lbs",
+    "freight_amount": "$1,675.00",
+    "fuel_surcharge": "$167.50",
+    "handling_charge": "$55.00",
+    "total_amount": "$1,897.50",
+    "vehicle_number": "MI-7721",
+    "driver_name": "Michael Carter",
+    "pickup_time": "08:00 AM",
+    "delivery_time": "02:30 PM",
+    "special_instructions": "Check seal before unloading"
+  }
+}

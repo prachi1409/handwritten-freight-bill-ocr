@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_08_hard.pdf",
+  "difficulty": "Hard",
+  "font": "Comic Sans MS",
+  "ground_truth": {
+    "bill_number": "FB-80518",
+    "invoice_number": "INV-80518-S",
+    "bill_date": "2026-09-01",
+    "carrier": "Southern Line Haul",
+    "consignor": "B8 Metal Fabricators",
+    "consignee": "S5 Supply Depot",
+    "origin": "Birmingham, AL",
+    "destination": "Atlanta, GA",
+    "commodity_description": "Sheet Metal Coil",
+    "quantity": "8 Coils",
+    "weight": "45,800 lbs",
+    "freight_amount": "$2,850.00",
+    "fuel_surcharge": "$285.00",
+    "handling_charge": "$95.00",
+    "total_amount": "$3,230.00",
+    "vehicle_number": "AL-8501",
+    "driver_name": "Brian Scott",
+    "pickup_time": "08:45 AM",
+    "delivery_time": "03:15 PM",
+    "special_instructions": "Tarp required - heavy load"
+  }
+}

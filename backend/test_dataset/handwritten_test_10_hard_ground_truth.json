@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_10_hard.pdf",
+  "difficulty": "Hard",
+  "font": "Segoe Script",
+  "ground_truth": {
+    "bill_number": "HB-10295",
+    "invoice_number": "INV-HB-10295",
+    "bill_date": "2026-09-03",
+    "carrier": "Cross Country Logistics",
+    "consignor": "Apex Machinery Inc",
+    "consignee": "Pacific Heavy Equipment",
+    "origin": "Denver, CO",
+    "destination": "Salt Lake City, UT",
+    "commodity_description": "Heavy Industrial Motor",
+    "quantity": "2 Units",
+    "weight": "38,900 lbs",
+    "freight_amount": "$3,450.00",
+    "fuel_surcharge": "$345.00",
+    "handling_charge": "$150.00",
+    "total_amount": "$3,945.00",
+    "vehicle_number": "CO-9021",
+    "driver_name": "George Harris",
+    "pickup_time": "06:30 AM",
+    "delivery_time": "02:45 PM",
+    "special_instructions": "Overweight permit required"
+  }
+}

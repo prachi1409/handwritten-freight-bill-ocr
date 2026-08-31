@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_01_easy.pdf",
+  "difficulty": "Easy",
+  "font": "Segoe Script",
+  "ground_truth": {
+    "bill_number": "FB-10021",
+    "invoice_number": "INV-10021-A",
+    "bill_date": "2026-08-25",
+    "carrier": "Apex Freight Carriers",
+    "consignor": "Alpha Steel Mills",
+    "consignee": "Delta Industrial Supply",
+    "origin": "Chicago, IL",
+    "destination": "St. Louis, MO",
+    "commodity_description": "Steel Rods & Bars",
+    "quantity": "18 Pallets",
+    "weight": "24,500 lbs",
+    "freight_amount": "$1,250.00",
+    "fuel_surcharge": "$125.00",
+    "handling_charge": "$50.00",
+    "total_amount": "$1,425.00",
+    "vehicle_number": "IL-8841",
+    "driver_name": "Robert Davis",
+    "pickup_time": "08:30 AM",
+    "delivery_time": "02:15 PM",
+    "special_instructions": "Call receiving before delivery"
+  }
+}

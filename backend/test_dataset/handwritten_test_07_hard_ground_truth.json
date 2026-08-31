@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_07_hard.pdf",
+  "difficulty": "Hard",
+  "font": "Ink Free",
+  "ground_truth": {
+    "bill_number": "FB-71047",
+    "invoice_number": "INV-71047-Z",
+    "bill_date": "2026-08-31",
+    "carrier": "Freightways National",
+    "consignor": "B7 Chemical Plant",
+    "consignee": "Z7 Logistics Hub",
+    "origin": "Memphis, TN",
+    "destination": "Nashville, TN",
+    "commodity_description": "Hazardous Solvents",
+    "quantity": "17 Drums",
+    "weight": "17,850 lbs",
+    "freight_amount": "$1,750.00",
+    "fuel_surcharge": "$175.00",
+    "handling_charge": "$120.00",
+    "total_amount": "$2,045.00",
+    "vehicle_number": "TN-7182",
+    "driver_name": "Zachary Taylor",
+    "pickup_time": "07:15 AM",
+    "delivery_time": "01:45 PM",
+    "special_instructions": "HAZMAT class 3 - placards required"
+  }
+}

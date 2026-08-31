@@ -72,18 +72,28 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
     def _resolve_credentials_file(creds_path: str) -> Path:
         """Resolve a relative credentials path against cwd and the backend directory."""
         path = Path(creds_path).expanduser()
-        if path.is_absolute():
+        if path.is_absolute() and path.exists():
             return path
         cwd_path = (Path.cwd() / path).resolve()
         if cwd_path.exists():
             return cwd_path
         backend_root = Path(__file__).resolve().parents[2]
-        return (backend_root / path).resolve()
+        backend_path = (backend_root / path).resolve()
+        if backend_path.exists():
+            return backend_path
+
+        creds_dir = backend_root / "credentials"
+        if creds_dir.exists() and creds_dir.is_dir():
+            json_files = list(creds_dir.glob("*.json"))
+            if json_files:
+                return json_files[0]
+
+        return path
 
     def process_document(self, file_path: Path) -> OCRResult:
-        """Send a PDF to Document AI and return normalized freight-bill fields.
+        """Send a PDF to Google Document AI API and return normalized freight-bill fields.
 
-        Falls back to the local processor only when the API call itself fails.
+        If Document AI fails, raises an exception so the document status becomes FAILED.
         """
         path = Path(file_path)
         if not path.exists():
@@ -92,12 +102,8 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
         try:
             document = self._call_document_ai(path)
         except Exception as api_err:
-            logger.warning(
-                "Google Document AI API call failed (%s). Falling back to Local OCR Processor.",
-                api_err,
-            )
-            from app.ocr.local_processor import LocalOCRProcessor
-            return LocalOCRProcessor().process_document(path)
+            logger.error("Google Document AI API execution failed for '%s': %s", path.name, api_err)
+            raise RuntimeError(f"Google Document AI API Error: {api_err}") from api_err
 
         result = self.build_result(document)
         self._attach_pipeline_meta(result, path)
@@ -158,7 +164,7 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
         return document
 
     def build_result(self, document: Any) -> OCRResult:
-        """Map a Document AI Document into OCRResult JSON (used by tests with mocks)."""
+        """Map a Document AI Document into OCRResult JSON."""
         raw_text = getattr(document, "text", None) or ""
         structured, entities_list, form_fields_list, page_confidences = (
             self._extract_structured_fields(document, raw_text)
@@ -200,9 +206,10 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
     ) -> tuple[Dict[str, Any], List[Dict[str, Any]], List[Dict[str, Any]], List[float]]:
         """Collect entity and form-parser fields from a Document AI response."""
         structured: Dict[str, Any] = {key: None for key in (
-            "bill_number", "invoice_number", "bill_date", "consignor", "consignee",
+            "bill_number", "invoice_number", "bill_date", "carrier", "consignor", "consignee",
             "origin", "destination", "vehicle_number", "weight", "quantity",
-            "freight_amount", "total_amount",
+            "freight_amount", "fuel_surcharge", "handling_charge", "total_amount",
+            "driver_name", "pickup_time", "delivery_time", "special_instructions"
         )}
         structured["line_items"] = []
 

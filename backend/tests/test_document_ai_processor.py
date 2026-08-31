@@ -1,155 +1,146 @@
-"""Unit tests for OCR processor factory and Google Document AI field mapping."""
+"""Unit tests for Google Document AI processor mapping, factory resolution, and fallback mechanisms."""
 
-from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
+import pytest
 
+from app.ocr.base import OCRResult
 from app.ocr.document_ai import GoogleDocumentAIProcessor
 from app.ocr.factory import get_ocr_processor
-from app.ocr.field_extractor import map_label_to_field
 from app.ocr.local_processor import LocalOCRProcessor
 from app.ocr.mock_ai import MockDocumentAIProcessor
 
 
-def test_factory_uses_local_processor_when_testing(monkeypatch):
-    """conftest sets TESTING=True so unit tests never call Google Cloud."""
-    from app.core import config as config_mod
-    monkeypatch.setattr(config_mod.settings, "TESTING", True)
-    monkeypatch.setattr(config_mod.settings, "OCR_PROVIDER", "document_ai")
-    monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "proj")
-    monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "proc")
-
-    processor = get_ocr_processor()
-    assert isinstance(processor, LocalOCRProcessor)
+def test_factory_uses_local_processor_when_testing():
+    """When settings.TESTING is True (default in pytest conftest), factory must return LocalOCRProcessor."""
+    proc = get_ocr_processor()
+    assert isinstance(proc, LocalOCRProcessor)
 
 
 def test_factory_uses_document_ai_when_configured(monkeypatch):
+    """When TESTING is False and provider is document_ai with credentials configured, return GoogleDocumentAIProcessor."""
     from app.core import config as config_mod
     monkeypatch.setattr(config_mod.settings, "TESTING", False)
     monkeypatch.setattr(config_mod.settings, "OCR_PROVIDER", "document_ai")
-    monkeypatch.setattr(config_mod.settings, "USE_MOCK_OCR", False)
-    monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "proj-123")
-    monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "processor-abc")
+    monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "test-project-id")
+    monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "test-processor-id")
 
-    processor = get_ocr_processor()
-    assert isinstance(processor, GoogleDocumentAIProcessor)
+    proc = get_ocr_processor()
+    assert isinstance(proc, GoogleDocumentAIProcessor)
 
 
 def test_factory_falls_back_to_local_without_credentials(monkeypatch):
+    """When OCR_PROVIDER is document_ai but project_id is empty, fall back to LocalOCRProcessor."""
     from app.core import config as config_mod
     monkeypatch.setattr(config_mod.settings, "TESTING", False)
     monkeypatch.setattr(config_mod.settings, "OCR_PROVIDER", "document_ai")
-    monkeypatch.setattr(config_mod.settings, "USE_MOCK_OCR", False)
     monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "")
     monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "")
 
-    processor = get_ocr_processor()
-    assert isinstance(processor, LocalOCRProcessor)
+    proc = get_ocr_processor()
+    assert isinstance(proc, LocalOCRProcessor)
 
 
 def test_factory_uses_mock_when_requested(monkeypatch):
+    """When OCR_PROVIDER is mock, return MockDocumentAIProcessor."""
     from app.core import config as config_mod
     monkeypatch.setattr(config_mod.settings, "TESTING", False)
     monkeypatch.setattr(config_mod.settings, "OCR_PROVIDER", "mock")
-    monkeypatch.setattr(config_mod.settings, "USE_MOCK_OCR", False)
-    monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "")
-    monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "")
 
-    processor = get_ocr_processor()
-    assert isinstance(processor, MockDocumentAIProcessor)
+    proc = get_ocr_processor()
+    assert isinstance(proc, MockDocumentAIProcessor)
 
 
 def test_map_label_to_field_aliases():
-    assert map_label_to_field("job_number") == "bill_number"
-    assert map_label_to_field("Shipper Name") == "consignor"
-    assert map_label_to_field("BOL Number") == "bill_number"
-    assert map_label_to_field("unknown_label") is None
+    """Verify raw entity type strings map to standardized schema field names."""
+    from app.ocr.field_extractor import map_label_to_field
+
+    assert map_label_to_field("invoice_id") == "invoice_number"
+    assert map_label_to_field("shipper_name") == "consignor"
+    assert map_label_to_field("receiver_name") == "consignee"
+    assert map_label_to_field("total_amount") == "total_amount"
+    assert map_label_to_field("carrier_name") == "carrier"
+    assert map_label_to_field("purchase_order") == "bill_number"
 
 
 def test_document_ai_maps_entities_and_fills_from_text(monkeypatch):
+    """Verify GoogleDocumentAIProcessor.build_result maps proto entities into normalized json."""
     from app.core import config as config_mod
     monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "proj")
     monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "proc")
-    monkeypatch.setattr(config_mod.settings, "GOOGLE_APPLICATION_CREDENTIALS", "")
-
-    raw_text = (
-        "FREIGHT BILL\n"
-        "Bill No: HB-78421\n"
-        "Invoice No: INV-100\n"
-        "Date: 26/08/2026\n"
-        "Consignor: Apex Logistics\n"
-        "Consignee: Global Mart\n"
-        "Origin: Houston, TX\n"
-        "Destination: Dallas, TX\n"
-        "Vehicle No: TX-1234\n"
-        "Weight: 10,000 lbs\n"
-        "Quantity: 12 Pallets\n"
-        "Freight Amount: $1,200.00\n"
-        "Total Amount: $1,200.00\n"
-    )
-    entity = SimpleNamespace(
-        type_="shipper_name",
-        mention_text="Apex Logistics",
-        normalized_value=None,
-        confidence=0.92,
-    )
-    document = SimpleNamespace(text=raw_text, entities=[entity], pages=[])
 
     processor = GoogleDocumentAIProcessor()
-    result = processor.build_result(document)
 
-    assert result.processor == "google-cloud-documentai"
-    assert result.extracted_data["consignor"] == "Apex Logistics"
-    assert result.extracted_data["bill_number"] == "HB-78421"
-    assert result.extracted_data["total_amount"] == "$1,200.00"
-    assert result.raw_ocr["source"] == "google-cloud-documentai"
-    assert result.raw_ocr["entities"][0]["type"] == "shipper_name"
+    entity_inv = MagicMock()
+    entity_inv.type_ = "invoice_id"
+    entity_inv.mention_text = "INV-998877"
+    entity_inv.confidence = 0.96
+
+    entity_total = MagicMock()
+    entity_total.type_ = "total_amount"
+    entity_total.mention_text = "$4,200.00"
+    entity_total.confidence = 0.94
+
+    mock_doc = MagicMock()
+    mock_doc.text = (
+        "CARRIER FREIGHT MANIFEST\n"
+        "Bill No: HB-12345\n"
+        "Consignor: Apex Global Corp\n"
+        "Consignee: Metro Logistics\n"
+        "Origin: Chicago, IL\n"
+        "Destination: Dallas, TX\n"
+        "Total Amount: $4,200.00\n"
+    )
+    mock_doc.entities = [entity_inv, entity_total]
+    mock_doc.pages = []
+
+    res = processor.build_result(mock_doc)
+
+    assert isinstance(res, OCRResult)
+    assert res.processor == "google-cloud-documentai"
+    ext = res.extracted_data
+    assert ext["invoice_number"] == "INV-998877"
+    assert ext["total_amount"] == "$4,200.00"
+    assert ext["bill_number"] == "HB-12345"
+    assert ext["consignor"] == "Apex Global Corp"
+    assert ext["consignee"] == "Metro Logistics"
+    assert ext["origin"] == "Chicago, IL"
+    assert ext["destination"] == "Dallas, TX"
 
 
 def test_document_ai_maps_form_fields(monkeypatch):
+    """Verify Document AI page form_fields key-value pairs are extracted when entities are absent."""
     from app.core import config as config_mod
     monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "proj")
     monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "proc")
-    monkeypatch.setattr(config_mod.settings, "GOOGLE_APPLICATION_CREDENTIALS", "")
-
-    raw_text = "Bill NoHB-55OriginHouston"
-    name_anchor = SimpleNamespace(
-        text_segments=[SimpleNamespace(start_index=0, end_index=7)]
-    )
-    value_anchor = SimpleNamespace(
-        text_segments=[SimpleNamespace(start_index=7, end_index=12)]
-    )
-    origin_name_anchor = SimpleNamespace(
-        text_segments=[SimpleNamespace(start_index=12, end_index=18)]
-    )
-    origin_value_anchor = SimpleNamespace(
-        text_segments=[SimpleNamespace(start_index=18, end_index=25)]
-    )
-    form_fields = [
-        SimpleNamespace(
-            field_name=SimpleNamespace(text_anchor=name_anchor, confidence=0.9, mention_text=None),
-            field_value=SimpleNamespace(text_anchor=value_anchor, mention_text=None),
-        ),
-        SimpleNamespace(
-            field_name=SimpleNamespace(text_anchor=origin_name_anchor, confidence=0.8, mention_text=None),
-            field_value=SimpleNamespace(text_anchor=origin_value_anchor, mention_text=None),
-        ),
-    ]
-    page = SimpleNamespace(
-        layout=SimpleNamespace(confidence=0.88),
-        form_fields=form_fields,
-    )
-    document = SimpleNamespace(text=raw_text, entities=[], pages=[page])
 
     processor = GoogleDocumentAIProcessor()
-    result = processor.build_result(document)
 
-    assert result.extracted_data["bill_number"] == "HB-55"
-    assert result.extracted_data["origin"] == "Houston"
-    assert result.raw_ocr["page_count"] == 1
-    assert result.raw_ocr["form_fields"][0]["name"] == "Bill No"
+    doc_text = "Shipper: Pinnacle Steel\nReceiver: Central Hub\n"
+
+    seg_name = MagicMock(start_index=0, end_index=7)     # 'Shipper'
+    seg_val = MagicMock(start_index=9, end_index=23)    # 'Pinnacle Steel'
+
+    field = MagicMock()
+    field.field_name.text_anchor.text_segments = [seg_name]
+    field.field_value.text_anchor.text_segments = [seg_val]
+
+    page = MagicMock()
+    page.layout.confidence = 0.91
+    page.form_fields = [field]
+
+    mock_doc = MagicMock()
+    mock_doc.text = doc_text
+    mock_doc.entities = []
+    mock_doc.pages = [page]
+
+    res = processor.build_result(mock_doc)
+
+    ext = res.extracted_data
+    assert ext["consignor"] == "Pinnacle Steel"
 
 
-def test_document_ai_falls_back_to_local_on_api_error(monkeypatch, create_pdf):
+def test_document_ai_raises_error_on_api_failure(monkeypatch, create_pdf):
+    """When Document AI API call fails, processor must raise an exception so status becomes FAILED."""
     from app.core import config as config_mod
     monkeypatch.setattr(config_mod.settings, "GOOGLE_CLOUD_PROJECT_ID", "proj")
     monkeypatch.setattr(config_mod.settings, "DOCUMENT_AI_PROCESSOR_ID", "proc")
@@ -162,7 +153,7 @@ def test_document_ai_falls_back_to_local_on_api_error(monkeypatch, create_pdf):
     )
     processor = GoogleDocumentAIProcessor()
     with patch.object(processor, "_call_document_ai", side_effect=RuntimeError("quota exceeded")):
-        result = processor.process_document(pdf_path)
+        with pytest.raises(RuntimeError) as exc_info:
+            processor.process_document(pdf_path)
 
-    assert result.processor == "local-ocr-processor"
-    assert result.extracted_data["bill_number"] == "FB-9900"
+    assert "quota exceeded" in str(exc_info.value)

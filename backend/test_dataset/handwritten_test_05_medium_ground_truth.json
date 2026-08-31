@@ -1,0 +1,27 @@
+{
+  "filename": "handwritten_test_05_medium.pdf",
+  "difficulty": "Medium",
+  "font": "Comic Sans MS",
+  "ground_truth": {
+    "bill_number": "HB-50105",
+    "invoice_number": "INV-HB-50105",
+    "bill_date": "2026-08-29",
+    "carrier": "Express Haulers Inc",
+    "consignor": "Starlight Pharma",
+    "consignee": "Midwest Storage Labs",
+    "origin": "Kansas City, MO",
+    "destination": "Omaha, NE",
+    "commodity_description": "Medical Supplies",
+    "quantity": "42 Crates",
+    "weight": "15,600 lbs",
+    "freight_amount": "$2,140.00",
+    "fuel_surcharge": "$214.00",
+    "handling_charge": "$85.00",
+    "total_amount": "$2,439.00",
+    "vehicle_number": "MO-3321",
+    "driver_name": "Marcus Vance",
+    "pickup_time": "10:15 AM",
+    "delivery_time": "05:00 PM",
+    "special_instructions": "Temperature controlled 15C-25C"
+  }
+}

@@ -47,6 +47,27 @@ def get_document_stats(
     return DocumentService.get_document_stats(db=db)
 
 
+@router.post(
+    "/scan",
+    response_model=IngestionBatchResult,
+    summary="Scan Input Folder for New Freight Bills",
+    description="Scans input_doc_location directory for un-ingested PDF files and processes them."
+)
+@router.post(
+    "/scan-folder",
+    response_model=IngestionBatchResult,
+    summary="Scan Input Folder (Alias)",
+    description="Alias for scanning input folder."
+)
+def scan_documents(
+    db: Session = Depends(get_db)
+) -> IngestionBatchResult:
+    """Scan input directory and ingest new files."""
+    from app.core.config import settings
+    from app.ingestion.scanner import process_ingestion_batch
+    return process_ingestion_batch(db=db, input_dir=settings.INPUT_DOC_LOCATION)
+
+
 @router.get(
     "/{document_id}",
     response_model=DocumentResponse,
@@ -169,7 +190,7 @@ def get_document_file(
 
     if not abs_path.exists():
         raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.original_filename}")
-    
+
     disposition = "attachment" if download else "inline"
     return FileResponse(
         path=abs_path,

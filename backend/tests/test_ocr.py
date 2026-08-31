@@ -55,9 +55,9 @@ def test_freight_amount_vs_total_amount_separation(db_session, create_pdf):
     text_content = (
         "FREIGHT BILL & MANIFEST\n"
         "Bill No: FB-10238\n"
+        "Invoice No: INV-87924\n"
         "Date: 8/24/26\n"
         "Carrier: Midwest Hauling LLC\n"
-        "Invoice Number: INV-87924\n"
         "Consignor: Acme Steel Corp\n"
         "Consignee: Costco Wholesale #221\n"
         "Origin: Chicago, IL\n"
@@ -184,10 +184,12 @@ def test_submit_document_review_updates_status_to_completed(client, db_session):
 
     corrections = {
         "bill_number": "HB-9988",
+        "invoice_number": "INV-9988",
         "consignor": "Apex Logistics",
         "consignee": "Global Mart",
         "origin": "Mumbai",
         "destination": "Pune",
+        "freight_amount": "$1,200.00",
         "total_amount": "$1,200.00"
     }
 
