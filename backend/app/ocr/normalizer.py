@@ -1,4 +1,4 @@
-"""Validation and Normalization layer for OCR extracted Freight Bill data."""
+"""Validation, Field Confidence, and Normalization layer for OCR extracted Freight Bill data."""
 
 import logging
 import re
@@ -14,6 +14,30 @@ INVALID_STOP_WORDS = {
     "TRUCK", "DATE", "WEIGHT", "FREIGHT", "TOTAL", "AMOUNT", "N/A",
     "NONE", "NULL", "UNKNOWN", "CARGO", "ITEM", "VAL", "VALUE"
 }
+
+ALL_SCHEMA_FIELDS = (
+    "bill_number",
+    "bill_date",
+    "carrier",
+    "invoice_number",
+    "consignor",
+    "consignee",
+    "origin",
+    "destination",
+    "commodity_description",
+    "quantity",
+    "weight",
+    "freight_amount",
+    "total_amount",
+    "vehicle_number",
+    "driver_name",
+    "pickup_time",
+    "delivery_time",
+    "special_instructions",
+    "driver_signature",
+    "consignee_signature",
+    "received_datetime",
+)
 
 
 def clean_field_value(value: Optional[Any]) -> Optional[str]:
@@ -34,8 +58,6 @@ def clean_identifier(value: Optional[Any]) -> Optional[str]:
     if not raw:
         return None
 
-    # Remove embedded prefixes like "Bill No:", "Invoice No:", "Vehicle #: ", "Bill #:"
-    # Use word boundary \b so "INV-HB-5821" preserves "INV-" prefix!
     cleaned = re.sub(
         r"^(?:cargo\s*manifest\b\s*(?:no|number)?|manifest\b\s*(?:no|number)?|bill\s*of\s*lading\b\s*(?:no|number)?|bol\b\s*(?:no|number)?|bill\b\s*(?:no|number)?|invoice\b\s*(?:no|number)?|inv\b\s*(?:no|number)?|vehicle\b\s*(?:no|number)?|truck\b\s*(?:no|number)?)\s*[:#\s]+",
         "",
@@ -46,7 +68,6 @@ def clean_identifier(value: Optional[Any]) -> Optional[str]:
     if not cleaned or cleaned.upper() in INVALID_STOP_WORDS:
         return None
 
-    # Ensure identifier doesn't consist solely of punctuation or single stop word
     if re.match(r"^[^a-zA-Z0-9]+$", cleaned):
         return None
 
@@ -61,7 +82,6 @@ def normalize_currency(value: Optional[Any]) -> Optional[str]:
     if not val_str or val_str.upper() in INVALID_STOP_WORDS:
         return None
 
-    # Match numeric amounts with optional currency symbol
     match = re.search(r"[\$₹€£]?\s*([\d,]+\.?\d*)", val_str)
     if not match:
         return None
@@ -82,16 +102,18 @@ def normalize_date(value: Optional[Any]) -> Optional[str]:
     if not val_str or val_str.upper() in INVALID_STOP_WORDS:
         return None
 
-    # 1. Try DD/MM/YYYY or MM/DD/YYYY
-    match_slash = re.search(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{4})\b", val_str)
+    # 1. Try DD/MM/YYYY or MM/DD/YYYY or M/D/YY
+    match_slash = re.search(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b", val_str)
     if match_slash:
         p1, p2, year = int(match_slash.group(1)), int(match_slash.group(2)), int(match_slash.group(3))
+        if year < 100:
+            year += 2000
         if p1 > 12:
             day, month = p1, p2
         elif p2 > 12:
             day, month = p2, p1
         else:
-            day, month = p1, p2
+            month, day = p1, p2
         try:
             dt = datetime(year, month, day)
             return dt.strftime("%Y-%m-%d")
@@ -111,119 +133,184 @@ def normalize_date(value: Optional[Any]) -> Optional[str]:
     return val_str
 
 
-def normalize_freight_data(extracted: Dict[str, Any], raw_text: str = "", base_confidence: float = 0.95) -> Dict[str, Any]:
-    """Normalize, clean, and validate extracted freight bill dictionary."""
+def calculate_field_confidences(extracted: Dict[str, Any], raw_text: str = "") -> Dict[str, float]:
+    """Calculate evidence-based field-level confidence scores (0.0 to 1.0) for every schema field."""
+    confidences: Dict[str, float] = {}
+    is_manual = bool(extracted.get("manually_corrected") or extracted.get("reviewed"))
 
+    for field in ALL_SCHEMA_FIELDS:
+        val = extracted.get(field)
+        if val is None or str(val).strip() == "":
+            confidences[field] = 0.0
+            continue
+
+        if is_manual:
+            confidences[field] = 1.0
+            continue
+
+        val_str = str(val).strip()
+
+        # Identifier confidence (bill_number, invoice_number, vehicle_number)
+        if field in ("bill_number", "invoice_number", "vehicle_number"):
+            if re.search(r"[A-Za-z0-9-]{3,}", val_str):
+                confidences[field] = 0.95
+            else:
+                confidences[field] = 0.75
+        # Date confidence
+        elif field == "bill_date":
+            if re.match(r"^\d{4}-\d{2}-\d{2}$", val_str):
+                confidences[field] = 0.96
+            else:
+                confidences[field] = 0.80
+        # Currency amounts
+        elif field in ("freight_amount", "total_amount"):
+            if re.match(r"^\$\d{1,3}(?:,\d{3})*\.\d{2}$", val_str):
+                confidences[field] = 0.94
+            else:
+                confidences[field] = 0.82
+        # Text fields
+        else:
+            if len(val_str) >= 3:
+                confidences[field] = 0.90
+            else:
+                confidences[field] = 0.70
+
+    return confidences
+
+
+def normalize_freight_data(extracted: Dict[str, Any], raw_text: str = "", base_confidence: Optional[float] = None) -> Dict[str, Any]:
+    """Normalize, clean, and compute field-level confidence for extracted freight bill dictionary.
+
+    NOTE: Never copies freight_amount into total_amount. Missing fields remain None (null).
+    """
     bill_number = clean_identifier(extracted.get("bill_number"))
     invoice_number = clean_identifier(extracted.get("invoice_number"))
     vehicle_number = clean_identifier(extracted.get("vehicle_number"))
     bill_date = normalize_date(extracted.get("bill_date"))
 
+    carrier = clean_field_value(extracted.get("carrier"))
     consignor = clean_field_value(extracted.get("consignor"))
     consignee = clean_field_value(extracted.get("consignee"))
     origin = clean_field_value(extracted.get("origin"))
     destination = clean_field_value(extracted.get("destination"))
+    commodity_description = clean_field_value(extracted.get("commodity_description"))
     weight = clean_field_value(extracted.get("weight"))
     quantity = clean_field_value(extracted.get("quantity"))
+
+    driver_name = clean_field_value(extracted.get("driver_name"))
+    pickup_time = clean_field_value(extracted.get("pickup_time"))
+    delivery_time = clean_field_value(extracted.get("delivery_time"))
+    special_instructions = clean_field_value(extracted.get("special_instructions"))
+    driver_signature = clean_field_value(extracted.get("driver_signature"))
+    consignee_signature = clean_field_value(extracted.get("consignee_signature"))
+    received_datetime = clean_field_value(extracted.get("received_datetime"))
 
     freight_amount = normalize_currency(extracted.get("freight_amount"))
     total_amount = normalize_currency(extracted.get("total_amount"))
 
-    if freight_amount and not total_amount:
-        total_amount = freight_amount
+    # NEVER copy freight_amount to total_amount if total_amount is missing.
+    # Total amount remains None (null) if not present on document.
 
     line_items = extracted.get("line_items", [])
+    cleaned_items = []
     if isinstance(line_items, list):
-        cleaned_items = []
-        for item in line_items:
+        for idx, item in enumerate(line_items, start=1):
             if isinstance(item, dict):
                 cleaned_items.append({
-                    "item_no": str(item.get("item_no", "1")),
+                    "item_no": str(item.get("item_no") or idx),
                     "description": clean_field_value(item.get("description")),
                     "quantity": clean_field_value(item.get("quantity")) or quantity,
                     "rate": normalize_currency(item.get("rate")),
-                    "amount": normalize_currency(item.get("amount")) or freight_amount
+                    "amount": normalize_currency(item.get("amount"))
                 })
-        line_items = cleaned_items
 
-    # Compute dynamic field-level extraction confidence score
-    key_fields = [
-        bill_number, invoice_number, bill_date, consignor, consignee,
-        origin, destination, vehicle_number, weight, quantity, freight_amount, total_amount
-    ]
-    valid_count = sum(1 for f in key_fields if f is not None)
-
-    is_reviewed = bool(extracted.get("manually_corrected") or extracted.get("reviewed"))
-
-    if is_reviewed:
-        # High confidence for manually reviewed & corrected fields
-        calc_confidence = round(min(1.0, max(0.85, (valid_count / len(key_fields)))), 2)
-    elif not raw_text or not raw_text.strip():
-        calc_confidence = 0.0
-    else:
-        completion_ratio = valid_count / len(key_fields)
-        calc_confidence = round(min(1.0, max(0.0, base_confidence * completion_ratio)), 2)
-
-    res = {
+    data = {
         "document_type": "freight_bill",
         "bill_number": bill_number,
-        "invoice_number": invoice_number,
         "bill_date": bill_date,
+        "carrier": carrier,
+        "invoice_number": invoice_number,
         "consignor": consignor,
         "consignee": consignee,
         "origin": origin,
         "destination": destination,
-        "vehicle_number": vehicle_number,
-        "weight": weight,
+        "commodity_description": commodity_description,
         "quantity": quantity,
+        "weight": weight,
         "freight_amount": freight_amount,
         "total_amount": total_amount,
-        "ocr_confidence": calc_confidence,
-        "line_items": line_items,
+        "vehicle_number": vehicle_number,
+        "driver_name": driver_name,
+        "pickup_time": pickup_time,
+        "delivery_time": delivery_time,
+        "special_instructions": special_instructions,
+        "driver_signature": driver_signature,
+        "consignee_signature": consignee_signature,
+        "received_datetime": received_datetime,
+        "line_items": cleaned_items,
         "raw_text": raw_text
     }
 
-    if is_reviewed:
-        res["manually_corrected"] = True
-        res["reviewed"] = True
-        res["reviewed_at"] = extracted.get("reviewed_at")
+    if extracted.get("manually_corrected") or extracted.get("reviewed"):
+        data["manually_corrected"] = True
+        data["reviewed"] = True
+        data["reviewed_at"] = extracted.get("reviewed_at")
 
-    return res
+    field_confidences = calculate_field_confidences(data, raw_text=raw_text)
+
+    # Calculate overall_confidence as mean of present fields
+    present_confidences = [score for field, score in field_confidences.items() if data.get(field) is not None]
+    if present_confidences:
+        overall_conf = round(sum(present_confidences) / len(present_confidences), 2)
+    else:
+        overall_conf = 0.0
+
+    data["ocr_confidence"] = overall_conf
+    data["field_confidence"] = field_confidences
+
+    return data
 
 
-def validate_extraction_status(extracted: Dict[str, Any], confidence: float) -> Tuple[DocumentStatus, Optional[str]]:
-    """Validate extracted freight bill dictionary and return appropriate DocumentStatus and review reasons."""
+def validate_extraction_status(extracted: Dict[str, Any], confidence: float) -> Tuple[DocumentStatus, List[str]]:
+    """Validate extracted freight bill dictionary and return appropriate DocumentStatus and validation warnings list."""
+    warnings: List[str] = []
+
     if not extracted:
-        return DocumentStatus.REVIEW, "Document contains no extracted data."
+        return DocumentStatus.REVIEW, ["Document contains no extracted data."]
 
-    missing_reasons = []
-
-    # 1. Check confidence threshold (skip if manually reviewed & corrected by operator)
     is_reviewed = bool(extracted.get("manually_corrected") or extracted.get("reviewed"))
     if confidence < 0.70 and not is_reviewed:
-        missing_reasons.append(f"Low confidence ({confidence * 100:.1f}%)")
+        warnings.append(f"Low overall confidence ({confidence * 100:.1f}%)")
 
-    # 2. Check critical identifiers
+    # Required fields validation
     has_id = bool(extracted.get("bill_number") or extracted.get("invoice_number"))
     if not has_id:
-        missing_reasons.append("Missing Bill/Invoice Number")
+        warnings.append("Missing Bill / Invoice Number")
 
-    # 3. Check parties & location info
     has_parties = bool(extracted.get("consignor") or extracted.get("consignee"))
     if not has_parties:
-        missing_reasons.append("Missing consignor/consignee")
+        warnings.append("Missing Consignor / Consignee")
 
     has_locations = bool(extracted.get("origin") or extracted.get("destination"))
     if not has_locations:
-        missing_reasons.append("Missing origin/destination")
+        warnings.append("Missing Origin / Destination")
 
-    # 4. Check financial fields
     freight_amt = extracted.get("freight_amount")
     total_amt = extracted.get("total_amount")
-    if not freight_amt and not total_amt:
-        missing_reasons.append("Missing total amount")
+    if not total_amt and not freight_amt:
+        warnings.append("Missing Total Amount")
 
-    # 5. Check line items vs total amount consistency if multiple line items exist
+    # Financial consistency checks
+    if freight_amt and total_amt:
+        try:
+            f_val = float(re.sub(r"[^\d.]", "", str(freight_amt)))
+            t_val = float(re.sub(r"[^\d.]", "", str(total_amt)))
+            if f_val > t_val:
+                warnings.append(f"Financial inconsistency: Freight amount ({freight_amt}) exceeds total amount ({total_amt})")
+        except Exception:
+            pass
+
+    # Line item math consistency
     line_items = extracted.get("line_items", [])
     if isinstance(line_items, list) and len(line_items) > 1 and total_amt:
         line_sums = 0.0
@@ -244,19 +331,9 @@ def validate_extraction_status(extracted: Dict[str, Any], confidence: float) -> 
             except ValueError:
                 pass
         if line_sums > 0 and total_num > 0 and abs(line_sums - total_num) > 1.0:
-            missing_reasons.append(f"Line item amount sum (${line_sums:,.2f}) does not match total amount ({total_amt})")
+            warnings.append(f"Line item sum (${line_sums:,.2f}) does not match total amount ({total_amt})")
 
-    # 6. Count valid extracted fields out of 12
-    key_fields = [
-        "bill_number", "invoice_number", "bill_date", "consignor", "consignee",
-        "origin", "destination", "vehicle_number", "weight", "quantity", "freight_amount", "total_amount"
-    ]
-    valid_count = sum(1 for k in key_fields if extracted.get(k) is not None)
-    if valid_count < 4:
-        missing_reasons.append(f"Only {valid_count}/12 fields extracted")
+    if warnings:
+        return DocumentStatus.REVIEW, warnings
 
-    if missing_reasons:
-        msg = f"Document flagged for manual review: {'; '.join(missing_reasons)}."
-        return DocumentStatus.REVIEW, msg
-
-    return DocumentStatus.COMPLETED, None
+    return DocumentStatus.COMPLETED, []

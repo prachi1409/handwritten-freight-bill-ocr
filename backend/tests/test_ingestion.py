@@ -27,7 +27,7 @@ def test_batch_ingestion_new_files(db_session, create_pdf, tmp_path):
     # Verify Database records
     docs = db_session.query(Document).all()
     assert len(docs) == 2
-    assert {d.filename for d in docs} == {"bill_001.pdf", "bill_002.pdf"}
+    assert {d.original_filename for d in docs} == {"bill_001.pdf", "bill_002.pdf"}
     assert all(d.status in [DocumentStatus.REVIEW, DocumentStatus.COMPLETED, DocumentStatus.PENDING] for d in docs)
     assert all(d.created_at is not None for d in docs)
 
@@ -52,7 +52,7 @@ def test_batch_ingestion_duplicate_detection(db_session, create_pdf, tmp_path):
     # Verify DB only contains 1 document row
     docs = db_session.query(Document).all()
     assert len(docs) == 1
-    assert docs[0].filename == "bill_001.pdf"
+    assert docs[0].original_filename == "bill_001.pdf"
 
 
 def test_batch_ingestion_handles_invalid_files(db_session, create_pdf, tmp_path):
@@ -76,4 +76,4 @@ def test_batch_ingestion_handles_invalid_files(db_session, create_pdf, tmp_path)
     # DB should contain only valid document
     docs = db_session.query(Document).all()
     assert len(docs) == 1
-    assert docs[0].filename == "valid_bill.pdf"
+    assert docs[0].original_filename == "valid_bill.pdf"

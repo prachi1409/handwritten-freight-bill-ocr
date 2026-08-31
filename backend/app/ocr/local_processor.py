@@ -149,7 +149,7 @@ class LocalOCRProcessor(BaseOCRProcessor):
                 logger.info("  - %s: %r", k, v)
         logger.info("  - line_items count: %s", len(raw_dict.get("line_items") or []))
 
-        normalized = normalize_freight_data(raw_dict, raw_text=raw_text, base_confidence=0.95)
+        normalized = normalize_freight_data(raw_dict, raw_text=raw_text)
         intel = build_document_intelligence(
             raw_text,
             page_images=page_images,
@@ -195,4 +195,7 @@ class LocalOCRProcessor(BaseOCRProcessor):
             raw_ocr=raw_ocr,
             confidence=normalized["ocr_confidence"],
             processor="local-ocr-processor",
+            field_confidence=normalized.get("field_confidence", {}),
+            ocr_metadata=raw_ocr,
+            page_count=len(page_images)
         )

@@ -1,14 +1,14 @@
-"""Service layer for document handling and ingestion orchestration."""
+"""Service layer for document handling, upload, storage, and OCR orchestration."""
 
 import logging
-import shutil
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import UUID
-from sqlalchemy import String, cast, or_
+
 from fastapi import UploadFile, HTTPException, status
+from sqlalchemy import String, cast, or_
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
@@ -16,22 +16,12 @@ from app.db.models import Document, DocumentStatus
 from app.ingestion.hasher import calculate_file_hash
 from app.ingestion.validator import validate_pdf
 from app.ingestion.convert import ALLOWED_EXTENSIONS, ensure_pdf
-from app.ingestion.scanner import process_ingestion_batch
-from app.ingestion.archive import archive_inbox_file
 from app.ocr.factory import get_ocr_processor
 from app.ocr.normalizer import normalize_freight_data, validate_extraction_status
 from app.schemas.document import IngestionBatchResult, DocumentUploadResponse, DocumentStatsResponse
+from app.services.storage_service import StorageService
 
 logger = logging.getLogger(__name__)
-
-
-def _cleanup_upload_temps(temp_path: Path) -> None:
-    """Remove a failed upload and any PDF converted from it."""
-    if temp_path.exists():
-        temp_path.unlink(missing_ok=True)
-    leftover = temp_path.with_suffix(".pdf")
-    if leftover.exists() and leftover.name.lower().startswith("temp_"):
-        leftover.unlink(missing_ok=True)
 
 
 class DocumentService:
@@ -39,154 +29,129 @@ class DocumentService:
 
     @staticmethod
     def upload_document(db: Session, file: UploadFile) -> DocumentUploadResponse:
-        """Process an uploaded PDF file: validate, compute SHA-256 hash, detect duplicates,
+        """Process an uploaded file: validate, compute SHA-256, detect duplicates,
 
-        save valid document metadata to database, and trigger OCR extraction pipeline.
-
-        Args:
-            db: SQLAlchemy Database Session.
-            file: FastAPI UploadFile object.
-
-        Returns:
-            DocumentUploadResponse object.
+        save physical file as UUID in storage/documents, save DB record, and run OCR.
         """
-        filename = file.filename or ""
-        logger.info(f"Received file upload request: '{filename}'")
+        original_filename = file.filename or ""
+        logger.info(f"Processing upload request for: '{original_filename}'")
 
         # 1. Validate file extension
-        suffix = Path(filename).suffix.lower()
-        if not filename or suffix not in ALLOWED_EXTENSIONS:
-            msg = (
-                f"Invalid file extension for '{filename}'. "
-                "Supported types: PDF, JPG, PNG, TIFF."
-            )
+        suffix = Path(original_filename).suffix.lower()
+        if not original_filename or suffix not in ALLOWED_EXTENSIONS:
+            msg = f"Invalid file extension for '{original_filename}'. Supported types: PDF, JPG, PNG, TIFF."
             logger.warning(msg)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=msg
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=msg)
 
-        # 2. Save stream to temporary file in input directory
-        input_dir = settings.input_path
-        input_dir.mkdir(parents=True, exist_ok=True)
-        temp_path = input_dir / f"temp_{uuid.uuid4().hex}{suffix}"
-
+        # Read binary file bytes into memory
         try:
-            with open(temp_path, "wb") as buffer:
-                shutil.copyfileobj(file.file, buffer)
+            file_bytes = file.file.read()
         except Exception as e:
-            if temp_path.exists():
-                temp_path.unlink(missing_ok=True)
-            logger.error(f"Failed to write uploaded file to disk: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to process file upload: {str(e)}"
-            )
+            logger.error(f"Failed to read upload stream for '{original_filename}': {e}")
+            raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=f"File read failure: {e}")
+
+        if not file_bytes:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Uploaded file is empty.")
+
+        # Save to temporary storage for PDF validation
+        temp_dir = settings.storage_path / "temp"
+        temp_dir.mkdir(parents=True, exist_ok=True)
+        temp_file = temp_dir / f"temp_{uuid.uuid4().hex}{suffix}"
 
         try:
-            # 3. Validate PDF document structure using PyMuPDF utility
-            pdf_path = ensure_pdf(temp_path)
+            with open(temp_file, "wb") as f:
+                f.write(file_bytes)
+
+            # Convert images to PDF if needed
+            pdf_path = ensure_pdf(temp_file)
             validation = validate_pdf(pdf_path)
             if not validation.is_valid:
-                logger.warning(f"Uploaded file '{filename}' failed PDF validation: {validation.error_message}")
-                temp_path.unlink(missing_ok=True)
-                if pdf_path != temp_path:
-                    pdf_path.unlink(missing_ok=True)
+                logger.warning(f"File '{original_filename}' failed PDF validation: {validation.error_message}")
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail=f"Invalid PDF file: {validation.error_message}"
                 )
 
-            # 4. Calculate SHA-256 hash using chunked hasher utility
+            # Calculate SHA-256 hash
             file_hash = calculate_file_hash(pdf_path)
-            logger.info(f"Calculated SHA-256 hash for uploaded file '{filename}': {file_hash}")
+            logger.info(f"Calculated SHA-256 for '{original_filename}': {file_hash}")
 
-            # 5. Check if document already exists in DB based on file_hash
+            # Check duplicate in DB
             existing_doc = db.query(Document).filter(Document.file_hash == file_hash).first()
             if existing_doc:
-                logger.info(f"Duplicate document detected: '{filename}' matches existing document ID {existing_doc.id}")
-                temp_path.unlink(missing_ok=True)
-                if pdf_path != temp_path:
-                    pdf_path.unlink(missing_ok=True)
+                logger.info(f"Duplicate document detected: '{original_filename}' matches ID {existing_doc.id}")
                 return DocumentUploadResponse(
                     document_id=existing_doc.id,
-                    filename=existing_doc.filename,
+                    filename=existing_doc.original_filename,
                     status="DUPLICATE",
                     file_hash=file_hash,
                     hash=file_hash,
-                    message=f"Duplicate document detected. Already stored with ID {existing_doc.id}"
+                    message=f"Duplicate document detected. Already stored with ID {existing_doc.id}."
                 )
 
-            # 6. Save file permanently in INPUT_DOC_LOCATION
-            stored_name = Path(filename).stem + ".pdf"
-            target_path = input_dir / stored_name
-            if target_path.exists():
-                target_path = input_dir / f"{file_hash[:8]}_{stored_name}"
+            # Read valid PDF bytes to save permanently in storage/documents/<uuid>.pdf
+            with open(pdf_path, "rb") as pdf_f:
+                final_pdf_bytes = pdf_f.read()
 
-            if pdf_path != target_path:
-                pdf_path.replace(target_path)
-            if temp_path.exists() and temp_path != target_path:
-                temp_path.unlink(missing_ok=True)
+            stored_filename, relative_path, abs_path = StorageService.save_uploaded_file(
+                file_bytes=final_pdf_bytes,
+                original_filename=original_filename
+            )
+
+            # Count PDF pages
+            page_count = 1
+            try:
+                import pymupdf as fitz
+                doc_pdf = fitz.open(abs_path)
+                page_count = len(doc_pdf)
+                doc_pdf.close()
+            except Exception:
+                pass
 
             new_doc = Document(
-                filename=filename,
+                original_filename=original_filename,
+                stored_filename=stored_filename,
+                stored_path=relative_path,
                 file_hash=file_hash,
-                file_path=str(target_path),
-                status=DocumentStatus.PENDING
+                status=DocumentStatus.PENDING,
+                document_type="freight_bill",
+                page_count=page_count
             )
             db.add(new_doc)
             db.commit()
             db.refresh(new_doc)
 
-            logger.info(f"Uploaded document saved successfully: ID {new_doc.id}, path: '{target_path}'")
+            logger.info(f"Saved DB document ID {new_doc.id}, stored_path: '{new_doc.stored_path}'")
 
-            # 8. Automatically trigger OCR extraction pipeline for newly uploaded document
-            logger.info(f"Triggering OCR pipeline processing for uploaded document ID {new_doc.id}...")
+            # Process OCR pipeline
             processed_doc = DocumentService.process_document(db, new_doc.id)
 
             return DocumentUploadResponse(
                 document_id=processed_doc.id,
-                filename=processed_doc.filename,
+                filename=processed_doc.original_filename,
                 status=processed_doc.status.value,
                 file_hash=processed_doc.file_hash,
                 hash=processed_doc.file_hash,
                 message=f"Document uploaded and processed successfully with status '{processed_doc.status.value}'."
             )
 
-        except HTTPException:
-            _cleanup_upload_temps(temp_path)
-            raise
-        except Exception as e:
-            _cleanup_upload_temps(temp_path)
-            db.rollback()
-            logger.error(f"Unexpected error during document upload '{filename}': {e}", exc_info=True)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"An unexpected error occurred while processing document: {str(e)}"
-            )
-
-    @staticmethod
-    def ingest_documents(db: Session, input_dir: Optional[str] = None) -> IngestionBatchResult:
-        """Run batch ingestion scanner over target input directory and trigger OCR for new files."""
-        target_dir = Path(input_dir) if input_dir else settings.input_path
-        return process_ingestion_batch(db, target_dir)
+        finally:
+            if temp_file.exists():
+                temp_file.unlink(missing_ok=True)
+            leftover_pdf = temp_file.with_suffix(".pdf")
+            if leftover_pdf.exists() and leftover_pdf != temp_file:
+                leftover_pdf.unlink(missing_ok=True)
 
     @staticmethod
     def get_document_by_id(db: Session, document_id: UUID) -> Optional[Document]:
-        """Fetch document by primary key ID and auto-process if still PENDING."""
+        """Fetch document by ID."""
         doc = db.query(Document).filter(Document.id == document_id).first()
         if doc and doc.status == DocumentStatus.PENDING:
-            logger.info(f"Auto-processing PENDING document ID {doc.id} on fetch...")
             try:
                 doc = DocumentService.process_document(db, doc.id)
             except Exception as e:
-                logger.error(f"Auto-processing PENDING document ID {doc.id} failed: {e}", exc_info=True)
+                logger.error(f"Auto-processing PENDING document {doc.id} failed: {e}")
         return doc
-
-    @staticmethod
-    def get_document_by_hash(db: Session, file_hash: str) -> Optional[Document]:
-        """Fetch document by SHA-256 hash."""
-        return db.query(Document).filter(Document.file_hash == file_hash).first()
 
     @staticmethod
     def list_documents(
@@ -195,13 +160,13 @@ class DocumentService:
         limit: int = 100,
         q: Optional[str] = None,
     ) -> List[Document]:
-        """List documents ordered by creation date descending, optionally filtered by search text."""
+        """List documents ordered by created_at descending, optionally filtered by search text."""
         query = db.query(Document)
         if q and q.strip():
             term = f"%{q.strip()}%"
             query = query.filter(
                 or_(
-                    Document.filename.ilike(term),
+                    Document.original_filename.ilike(term),
                     cast(Document.extracted_data, String).ilike(term),
                     Document.error_message.ilike(term),
                 )
@@ -215,7 +180,7 @@ class DocumentService:
 
     @staticmethod
     def get_document_stats(db: Session) -> DocumentStatsResponse:
-        """Return document status count statistics from database."""
+        """Return status counts."""
         total = db.query(Document).count()
         completed = db.query(Document).filter(Document.status == DocumentStatus.COMPLETED).count()
         review_needed = db.query(Document).filter(Document.status == DocumentStatus.REVIEW).count()
@@ -232,99 +197,121 @@ class DocumentService:
 
     @staticmethod
     def process_document(db: Session, document_id: UUID) -> Document:
-        """Process document using OCR engine and update DB record with validation and state transitions."""
+        """Execute complete OCR pipeline on a document and update DB state."""
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not doc:
-            logger.error(f"Processing failed: Document ID {document_id} not found in database.")
             raise HTTPException(status_code=404, detail="Document not found")
 
-        file_path = Path(doc.file_path)
-        logger.info(f"Starting OCR processing stage 1/4: Document ID {doc.id}, file '{doc.filename}' ({file_path})")
+        # Resolve physical storage path
+        try:
+            abs_file_path = StorageService.resolve_path(doc.stored_path)
+        except Exception as err:
+            doc.status = DocumentStatus.FAILED
+            doc.error_message = f"File not found on disk: {err}"
+            db.commit()
+            db.refresh(doc)
+            raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.stored_path}")
 
-        # 1. Update status to PROCESSING and commit to DB
+        if not abs_file_path.exists():
+            doc.status = DocumentStatus.FAILED
+            doc.error_message = f"Physical file missing on disk: {abs_file_path}"
+            db.commit()
+            db.refresh(doc)
+            raise HTTPException(status_code=404, detail=f"Physical file missing: {doc.original_filename}")
+
         doc.status = DocumentStatus.PROCESSING
         db.commit()
 
         try:
-            # 2. Instantiate and run OCR processor (Google Document AI or Local fallback)
-            logger.info(f"Starting OCR processing stage 2/4: Calling OCR processor for '{doc.filename}'...")
             processor = get_ocr_processor()
-            ocr_result = processor.process_document(file_path)
-            logger.info(f"OCR processing stage 2/4 completed: Processor '{ocr_result.processor}', raw confidence {ocr_result.confidence}")
+            ocr_result = processor.process_document(abs_file_path)
 
-            # 3. Validate extracted fields completeness and assign state (COMPLETED vs REVIEW)
-            logger.info(f"Starting OCR processing stage 3/4: Validating extracted schema fields...")
-            final_status, review_msg = validate_extraction_status(ocr_result.extracted_data, ocr_result.confidence)
+            normalized = normalize_freight_data(
+                extracted=ocr_result.extracted_data,
+                raw_text=ocr_result.raw_text,
+                base_confidence=ocr_result.confidence
+            )
 
-            # Update document record fields
-            doc.extracted_data = ocr_result.extracted_data
-            doc.raw_ocr = ocr_result.raw_ocr
-            doc.confidence = ocr_result.confidence
+            # Deterministic validation
+            final_status, warnings = validate_extraction_status(
+                extracted=normalized,
+                confidence=normalized["ocr_confidence"]
+            )
+
+            doc.extracted_data = normalized
+            doc.field_confidence = normalized.get("field_confidence", {})
+            doc.raw_ocr_text = ocr_result.raw_text
+            doc.ocr_metadata = ocr_result.raw_ocr
+            doc.validation_warnings = warnings
+            doc.overall_confidence = normalized["ocr_confidence"]
+
             doc.status = final_status
             doc.processed_at = datetime.now(timezone.utc)
-            doc.error_message = review_msg if final_status == DocumentStatus.REVIEW else None
-
-            archived = archive_inbox_file(file_path, dest_name=Path(doc.file_path).name)
-            if archived is not None:
-                doc.file_path = str(archived)
+            doc.error_message = "; ".join(warnings) if warnings else None
 
             db.commit()
             db.refresh(doc)
-            logger.info(
-                f"OCR processing stage 4/4 completed: Document ID {doc.id} status set to '{doc.status.value}'. "
-                f"Confidence: {doc.confidence}, Review Note: '{doc.error_message}'"
-            )
+            logger.info(f"Document ID {doc.id} processed successfully. Status: {doc.status.value}, Confidence: {doc.overall_confidence}")
             return doc
 
         except Exception as e:
             db.rollback()
-            err_msg = f"OCR processing failure on '{doc.filename}': {str(e)}"
+            err_msg = f"OCR processing failure: {str(e)}"
             logger.error(err_msg, exc_info=True)
             doc.status = DocumentStatus.FAILED
             doc.error_message = str(e)
             db.commit()
             db.refresh(doc)
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=err_msg
-            )
+            return doc
 
     @staticmethod
     def submit_document_review(db: Session, document_id: UUID, corrected_data: Dict[str, Any]) -> Document:
-        """Submit manual review corrections, run normalizer & validation, and update DB record."""
+        """Submit manual corrections for a document, re-evaluate validation, and update DB."""
         doc = db.query(Document).filter(Document.id == document_id).first()
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
 
-        # Preserve existing raw_text if present in current doc
-        raw_text = ""
-        if doc.extracted_data and isinstance(doc.extracted_data, dict):
-            raw_text = doc.extracted_data.get("raw_text", "")
-        elif doc.raw_ocr and isinstance(doc.raw_ocr, dict):
-            raw_text = doc.raw_ocr.get("raw_text", "")
+        raw_text = doc.raw_ocr_text or ""
+        corrected_data["manually_corrected"] = True
+        corrected_data["reviewed"] = True
+        corrected_data["reviewed_at"] = datetime.now(timezone.utc).isoformat()
 
-        # Run submitted dictionary through normalizer
-        normalized = normalize_freight_data(corrected_data, raw_text=raw_text, base_confidence=doc.confidence or 0.95)
-
-        # Add audit trail metadata
-        normalized["reviewed"] = True
-        normalized["reviewed_at"] = datetime.now(timezone.utc).isoformat()
-        normalized["manually_corrected"] = True
-
-        # Re-evaluate validation status
-        final_status, review_msg = validate_extraction_status(normalized, normalized["ocr_confidence"])
+        normalized = normalize_freight_data(corrected_data, raw_text=raw_text)
+        final_status, warnings = validate_extraction_status(normalized, normalized["ocr_confidence"])
 
         doc.extracted_data = normalized
+        doc.field_confidence = normalized.get("field_confidence", {})
+        doc.validation_warnings = warnings
+        doc.overall_confidence = normalized["ocr_confidence"]
+        doc.manual_corrections = True
         doc.status = final_status
-        doc.error_message = review_msg if final_status == DocumentStatus.REVIEW else None
+        doc.error_message = "; ".join(warnings) if warnings else None
         doc.processed_at = datetime.now(timezone.utc)
 
         db.commit()
         db.refresh(doc)
-        logger.info(f"Manual review submitted for Document ID {doc.id}. New status: {doc.status.value}, Review note: '{doc.error_message}'")
+        logger.info(f"Manual corrections submitted for Document ID {doc.id}. New status: {doc.status.value}")
         return doc
 
     @staticmethod
     def reprocess_document(db: Session, document_id: UUID) -> Document:
-        """Alias for process_document to re-trigger complete extraction and validation pipeline."""
+        """Reprocess document by running full OCR extraction and validation again."""
         return DocumentService.process_document(db=db, document_id=document_id)
+
+    @staticmethod
+    def delete_document(db: Session, document_id: UUID) -> bool:
+        """Delete document record from DB and delete physical file from storage."""
+        doc = db.query(Document).filter(Document.id == document_id).first()
+        if not doc:
+            return False
+
+        try:
+            abs_path = StorageService.resolve_path(doc.stored_path)
+            if abs_path.exists():
+                abs_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+
+        db.delete(doc)
+        db.commit()
+        return True

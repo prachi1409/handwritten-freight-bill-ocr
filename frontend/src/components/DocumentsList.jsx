@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, HelpCircle, Eye } from 'lucide-react';
+import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, AlertCircle, Eye, Search, Filter } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import UploadModal from './UploadModal';
 import { fetchDocuments, fetchDocumentStats, scanDocuments } from '../api';
@@ -34,7 +34,6 @@ export default function DocumentsList({ onSelectDocument }) {
       if (statsData) {
         setStats(statsData);
       } else {
-        // Fallback stats calculation if /stats endpoint unavailable
         setStats({
           total_documents: docsData.length,
           completed: docsData.filter(d => (d.status || '').toUpperCase() === 'COMPLETED').length,
@@ -60,7 +59,7 @@ export default function DocumentsList({ onSelectDocument }) {
     try {
       const result = await scanDocuments();
       setIsScanning(false);
-      setBannerMessage(`Scanned ${result.total_scanned} files. Ingested: ${result.ingested_count}, Duplicates: ${result.duplicate_count}, Invalid: ${result.invalid_count}.`);
+      setBannerMessage(`Folder scan complete: ${result.total_scanned} files scanned (${result.ingested_count} ingested, ${result.duplicate_count} duplicates).`);
       loadData();
     } catch (err) {
       setIsScanning(false);
@@ -73,7 +72,6 @@ export default function DocumentsList({ onSelectDocument }) {
     loadData();
   };
 
-  // Filter documents based on selected tab
   const filteredDocuments = documents.filter(doc => {
     const status = (doc.status || '').toUpperCase();
     if (selectedFilter === 'ALL') return true;
@@ -105,31 +103,29 @@ export default function DocumentsList({ onSelectDocument }) {
       <div className="page-header">
         <div>
           <h1 className="page-title">Freight Bill OCR</h1>
-          <p className="page-subtitle">Review scanned freight bills and extracted data</p>
+          <p className="page-subtitle">Automated handwritten bill parsing, structured extraction, and manual audit verification.</p>
         </div>
 
         <div className="header-actions">
-          <input
-            type="search"
-            value={searchText}
-            onChange={(e) => setSearchText(e.target.value)}
-            onKeyDown={(e) => { if (e.key === 'Enter') loadData(); }}
-            placeholder="Search bill #, filename..."
-            style={{
-              minWidth: '200px',
-              padding: '0.45rem 0.75rem',
-              border: '1px solid #e2e8f0',
-              borderRadius: '0.375rem',
-              fontSize: '0.875rem'
-            }}
-          />
+          <div className="input-search-box">
+            <Search size={16} color="#94a3b8" style={{ position: 'absolute', left: '0.75rem' }} />
+            <input
+              type="search"
+              className="input-search"
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') loadData(); }}
+              placeholder="Search bill #, filename..."
+            />
+          </div>
+
           <button 
             className="btn btn-secondary" 
             onClick={loadData} 
             disabled={isLoading || isScanning}
-            title="Search and refresh document list"
+            title="Refresh document list"
           >
-            <RefreshCw size={16} className={isLoading ? 'spinner-icon' : ''} />
+            <RefreshCw size={15} className={isLoading ? 'spinner-icon' : ''} />
             <span>Refresh</span>
           </button>
 
@@ -142,7 +138,7 @@ export default function DocumentsList({ onSelectDocument }) {
             {isScanning ? (
               <div className="spinner spinner-dark" />
             ) : (
-              <FolderSearch size={16} />
+              <FolderSearch size={15} />
             )}
             <span>Scan Folder</span>
           </button>
@@ -151,8 +147,8 @@ export default function DocumentsList({ onSelectDocument }) {
             className="btn btn-primary" 
             onClick={() => setIsUploadOpen(true)}
           >
-            <Upload size={16} />
-            <span>Upload</span>
+            <Upload size={15} />
+            <span>Upload PDF</span>
           </button>
         </div>
       </div>
@@ -163,7 +159,7 @@ export default function DocumentsList({ onSelectDocument }) {
           <span>{bannerMessage}</span>
           <button 
             onClick={() => setBannerMessage(null)} 
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit' }}
+            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontWeight: 700 }}
           >
             ✕
           </button>
@@ -173,15 +169,19 @@ export default function DocumentsList({ onSelectDocument }) {
       {error && (
         <div className="alert alert-error">
           <span>{error}</span>
-          <button className="btn btn-secondary" style={{ padding: '0.25rem 0.5rem', fontSize: '0.75rem' }} onClick={loadData}>
+          <button className="btn btn-secondary" style={{ padding: '0.25rem 0.625rem', fontSize: '0.75rem' }} onClick={loadData}>
             Retry
           </button>
         </div>
       )}
 
-      {/* 5 Top Summary Statistic Cards */}
-      <div className="stats-grid" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
-        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('ALL')}>
+      {/* 5 Modern SaaS KPI Statistics Cards */}
+      <div className="stats-grid">
+        <div 
+          className={`stat-card stat-all ${selectedFilter === 'ALL' ? 'active' : ''}`}
+          style={{ cursor: 'pointer' }} 
+          onClick={() => setSelectedFilter('ALL')}
+        >
           <div className="stat-icon" style={{ backgroundColor: '#eff6ff', color: '#2563eb' }}>
             <FileText size={20} />
           </div>
@@ -191,7 +191,11 @@ export default function DocumentsList({ onSelectDocument }) {
           </div>
         </div>
 
-        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('COMPLETED')}>
+        <div 
+          className={`stat-card stat-completed ${selectedFilter === 'COMPLETED' ? 'active' : ''}`}
+          style={{ cursor: 'pointer' }} 
+          onClick={() => setSelectedFilter('COMPLETED')}
+        >
           <div className="stat-icon" style={{ backgroundColor: '#f0fdf4', color: '#16a34a' }}>
             <CheckCircle2 size={20} />
           </div>
@@ -201,9 +205,13 @@ export default function DocumentsList({ onSelectDocument }) {
           </div>
         </div>
 
-        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('REVIEW')}>
-          <div className="stat-icon" style={{ backgroundColor: '#fff7ed', color: '#c2410c' }}>
-            <HelpCircle size={20} />
+        <div 
+          className={`stat-card stat-review ${selectedFilter === 'REVIEW' ? 'active' : ''}`}
+          style={{ cursor: 'pointer' }} 
+          onClick={() => setSelectedFilter('REVIEW')}
+        >
+          <div className="stat-icon" style={{ backgroundColor: '#fff7ed', color: '#ea580c' }}>
+            <AlertCircle size={20} />
           </div>
           <div>
             <div className="stat-value">{stats.review_needed}</div>
@@ -211,7 +219,11 @@ export default function DocumentsList({ onSelectDocument }) {
           </div>
         </div>
 
-        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('PENDING')}>
+        <div 
+          className={`stat-card stat-pending ${selectedFilter === 'PENDING' ? 'active' : ''}`}
+          style={{ cursor: 'pointer' }} 
+          onClick={() => setSelectedFilter('PENDING')}
+        >
           <div className="stat-icon" style={{ backgroundColor: '#fffbeb', color: '#d97706' }}>
             <Clock size={20} />
           </div>
@@ -221,7 +233,11 @@ export default function DocumentsList({ onSelectDocument }) {
           </div>
         </div>
 
-        <div className="stat-card" style={{ cursor: 'pointer' }} onClick={() => setSelectedFilter('FAILED')}>
+        <div 
+          className={`stat-card stat-failed ${selectedFilter === 'FAILED' ? 'active' : ''}`}
+          style={{ cursor: 'pointer' }} 
+          onClick={() => setSelectedFilter('FAILED')}
+        >
           <div className="stat-icon" style={{ backgroundColor: '#fef2f2', color: '#dc2626' }}>
             <AlertTriangle size={20} />
           </div>
@@ -232,13 +248,15 @@ export default function DocumentsList({ onSelectDocument }) {
         </div>
       </div>
 
-      {/* Main Table Card with Filter Tabs */}
+      {/* Main Documents Table Card with Segmented Filter Pills Bar */}
       <div className="card">
         <div className="card-header" style={{ flexWrap: 'wrap', gap: '1rem' }}>
-          <h2 className="card-title">Processed Documents</h2>
+          <div className="card-title">
+            <Filter size={18} color="#2563eb" />
+            <span>Processed Freight Documents</span>
+          </div>
           
-          {/* Status Filter Tabs */}
-          <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <div className="segmented-filters">
             {[
               { id: 'ALL', label: `All (${stats.total_documents})` },
               { id: 'COMPLETED', label: `Completed (${stats.completed})` },
@@ -248,19 +266,8 @@ export default function DocumentsList({ onSelectDocument }) {
             ].map(tab => (
               <button
                 key={tab.id}
+                className={`tab-pill ${selectedFilter === tab.id ? 'active' : ''}`}
                 onClick={() => setSelectedFilter(tab.id)}
-                style={{
-                  padding: '0.375rem 0.75rem',
-                  fontSize: '0.8125rem',
-                  fontWeight: 600,
-                  borderRadius: '0.375rem',
-                  border: '1px solid',
-                  borderColor: selectedFilter === tab.id ? '#2563eb' : '#e2e8f0',
-                  backgroundColor: selectedFilter === tab.id ? '#2563eb' : '#ffffff',
-                  color: selectedFilter === tab.id ? '#ffffff' : '#64748b',
-                  cursor: 'pointer',
-                  transition: 'all 0.15s ease'
-                }}
               >
                 {tab.label}
               </button>
@@ -271,18 +278,18 @@ export default function DocumentsList({ onSelectDocument }) {
         {isLoading ? (
           <div className="state-box">
             <div className="spinner spinner-dark" style={{ width: '2.5rem', height: '2.5rem' }} />
-            <p className="state-desc" style={{ marginTop: '0.5rem' }}>Loading documents...</p>
+            <p className="state-desc" style={{ marginTop: '0.5rem' }}>Fetching freight documents...</p>
           </div>
         ) : filteredDocuments.length === 0 ? (
           <div className="state-box">
             <div className="state-icon">
               <FileText size={32} />
             </div>
-            <h3 className="state-title">No documents match filter</h3>
+            <h3 className="state-title">No documents found</h3>
             <p className="state-desc">
               {selectedFilter === 'ALL'
-                ? 'Upload a freight bill PDF or drop files into the input folder to begin ingestion.'
-                : `No documents currently in '${selectedFilter}' status.`}
+                ? 'Upload a freight bill PDF or scan the input folder to begin OCR processing.'
+                : `No documents currently match the '${selectedFilter}' status filter.`}
             </p>
             {selectedFilter !== 'ALL' && (
               <button className="btn btn-secondary" onClick={() => setSelectedFilter('ALL')}>
@@ -295,48 +302,71 @@ export default function DocumentsList({ onSelectDocument }) {
             <table className="data-table">
               <thead>
                 <tr>
-                  <th>File Name</th>
+                  <th>Filename</th>
                   <th>Status</th>
-                  <th>Uploaded / Processed Date</th>
+                  <th>Document Type</th>
+                  <th>Confidence</th>
+                  <th>Created</th>
+                  <th>Processed</th>
                   <th style={{ textAlign: 'right' }}>Action</th>
                 </tr>
               </thead>
               <tbody>
-                {filteredDocuments.map((doc) => (
-                  <tr key={doc.id}>
-                    <td>
-                      <div style={{ display: 'flex', alignItems: 'center', gap: '0.75rem' }}>
-                        <div style={{ padding: '0.5rem', background: '#f1f5f9', borderRadius: '0.375rem', color: '#475569' }}>
-                          <FileText size={18} />
-                        </div>
-                        <div>
-                          <div style={{ fontWeight: 600, color: '#0f172a' }}>{doc.filename}</div>
-                          <div className="mono" style={{ color: '#94a3b8', fontSize: '0.75rem' }}>
-                            ID: {doc.id}
+                {filteredDocuments.map((doc) => {
+                  const conf = doc.overall_confidence ?? doc.confidence;
+                  return (
+                    <tr key={doc.id}>
+                      <td>
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
+                          <div style={{ padding: '0.625rem', background: '#eff6ff', borderRadius: '0.625rem', color: '#2563eb', flexShrink: 0 }}>
+                            <FileText size={20} />
+                          </div>
+                          <div>
+                            <div style={{ fontWeight: 700, color: '#0f172a', fontSize: '0.9375rem' }}>
+                              {doc.original_filename || doc.filename}
+                            </div>
+                            <div className="mono" style={{ color: '#94a3b8', fontSize: '0.75rem', marginTop: '0.125rem' }}>
+                              ID: {doc.id}
+                            </div>
                           </div>
                         </div>
-                      </div>
-                    </td>
-                    <td>
-                      <StatusBadge status={doc.status} />
-                    </td>
-                    <td>
-                      <div style={{ color: '#475569', fontSize: '0.875rem' }}>
-                        {formatDate(doc.processed_at || doc.created_at)}
-                      </div>
-                    </td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button 
-                        className="btn btn-outline" 
-                        style={{ padding: '0.375rem 0.75rem', fontSize: '0.8125rem' }}
-                        onClick={() => onSelectDocument(doc.id)}
-                      >
-                        <Eye size={14} />
-                        <span>View</span>
-                      </button>
-                    </td>
-                  </tr>
-                ))}
+                      </td>
+                      <td>
+                        <StatusBadge status={doc.status} />
+                      </td>
+                      <td>
+                        <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155' }}>
+                          {(doc.document_type || 'freight_bill').replace(/_/g, ' ')}
+                        </span>
+                      </td>
+                      <td>
+                        <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: conf >= 0.70 ? '#16a34a' : (conf ? '#ea580c' : '#94a3b8') }}>
+                          {conf !== null && conf !== undefined ? `${(conf * 100).toFixed(1)}%` : '—'}
+                        </span>
+                      </td>
+                      <td>
+                        <div style={{ color: '#475569', fontSize: '0.8125rem', fontWeight: 500 }}>
+                          {formatDate(doc.created_at)}
+                        </div>
+                      </td>
+                      <td>
+                        <div style={{ color: '#475569', fontSize: '0.8125rem', fontWeight: 500 }}>
+                          {formatDate(doc.processed_at)}
+                        </div>
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button 
+                          className="btn btn-outline" 
+                          style={{ padding: '0.375rem 0.875rem', fontSize: '0.8125rem' }}
+                          onClick={() => onSelectDocument(doc.id)}
+                        >
+                          <Eye size={14} />
+                          <span>View</span>
+                        </button>
+                      </td>
+                    </tr>
+                  );
+                })}
               </tbody>
             </table>
           </div>

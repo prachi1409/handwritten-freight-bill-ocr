@@ -10,26 +10,62 @@ from app.db.models import DocumentStatus
 
 class DocumentBase(BaseModel):
     """Base schema for document fields."""
-    filename: str
+    original_filename: str
+    stored_filename: str
+    stored_path: str
     file_hash: str
-    file_path: str
     status: DocumentStatus = DocumentStatus.PENDING
+    document_type: str = "freight_bill"
+    page_count: int = 1
+
+    # Aliases for frontend compatibility
+    @property
+    def filename(self) -> str:
+        return self.original_filename
+
+    @property
+    def file_path(self) -> str:
+        return self.stored_path
 
 
-class DocumentCreate(DocumentBase):
+class DocumentCreate(BaseModel):
     """Schema for document creation."""
-    pass
+    original_filename: str
+    stored_filename: str
+    stored_path: str
+    file_hash: str
+    status: DocumentStatus = DocumentStatus.PENDING
+    document_type: str = "freight_bill"
+    page_count: int = 1
 
 
-class DocumentResponse(DocumentBase):
+class DocumentResponse(BaseModel):
     """Schema for document response API outputs."""
     id: UUID
-    extracted_data: Optional[Dict[str, Any]] = None
-    raw_ocr: Optional[Dict[str, Any]] = None
-    confidence: Optional[float] = None
-    error_message: Optional[str] = None
+    filename: str
+    original_filename: str
+    stored_filename: str
+    stored_path: str
+    file_path: str
+    file_hash: str
+    status: DocumentStatus
+    document_type: str = "freight_bill"
+    page_count: int = 1
+    
     created_at: datetime
     processed_at: Optional[datetime] = None
+    overall_confidence: Optional[float] = None
+    confidence: Optional[float] = None
+
+    extracted_data: Optional[Dict[str, Any]] = None
+    field_confidence: Optional[Dict[str, Any]] = None
+    raw_ocr_text: Optional[str] = None
+    raw_ocr: Optional[Dict[str, Any]] = None
+    ocr_metadata: Optional[Dict[str, Any]] = None
+    validation_warnings: Optional[List[Any]] = None
+
+    manual_corrections: bool = False
+    error_message: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

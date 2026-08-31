@@ -61,23 +61,25 @@ def test_png_upload_converts_and_processes(client, tmp_path, db_session):
     data = response.json()
     assert data["status"] in ["REVIEW", "COMPLETED", "PENDING"]
     assert data["document_id"] is not None
-    doc = db_session.query(Document).filter(Document.filename == "scan_bill.png").first()
+    doc = db_session.query(Document).filter(Document.original_filename == "scan_bill.png").first()
     assert doc is not None
-    assert Path(doc.file_path).suffix.lower() == ".pdf"
+    assert Path(doc.stored_path).suffix.lower() == ".pdf"
 
 
 def test_list_documents_search_query(client, db_session):
     d1 = Document(
-        filename="alpha_bill.pdf",
+        original_filename="alpha_bill.pdf",
+        stored_filename="alpha_bill.pdf",
+        stored_path="p1",
         file_hash="h-alpha",
-        file_path="p1",
         status=DocumentStatus.COMPLETED,
         extracted_data={"bill_number": "HB-ALPHA"},
     )
     d2 = Document(
-        filename="beta_bill.pdf",
+        original_filename="beta_bill.pdf",
+        stored_filename="beta_bill.pdf",
+        stored_path="p2",
         file_hash="h-beta",
-        file_path="p2",
         status=DocumentStatus.COMPLETED,
         extracted_data={"bill_number": "HB-BETA"},
     )

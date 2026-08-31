@@ -1,4 +1,4 @@
-"""Document management, upload, listing, and reprocessing API routes."""
+"""Document management, upload, listing, serving, and reprocessing API routes."""
 
 import logging
 from pathlib import Path
@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 from app.db.database import get_db
 from app.schemas.document import DocumentResponse, DocumentUploadResponse, IngestionBatchResult, DocumentStatsResponse, DocumentReviewRequest
 from app.services.document_service import DocumentService
+from app.services.storage_service import StorageService
 
 logger = logging.getLogger(__name__)
 
@@ -68,7 +69,7 @@ def get_document(
     response_model=DocumentUploadResponse,
     status_code=status.HTTP_200_OK,
     summary="Upload Freight Bill Document",
-    description="Upload a freight bill as PDF, JPG, PNG, or TIFF. Images are converted to PDF before OCR.",
+    description="Upload a freight bill as PDF, JPG, PNG, or TIFF. Saves file as UUID in storage/documents.",
 )
 def upload_document(
     file: UploadFile = File(..., description="Freight bill PDF or scan image"),
@@ -76,33 +77,6 @@ def upload_document(
 ) -> DocumentUploadResponse:
     """Upload a PDF document."""
     return DocumentService.upload_document(db=db, file=file)
-
-
-@router.post(
-    "/scan",
-    response_model=IngestionBatchResult,
-    summary="Scan Input Directory",
-    description="Scan the configured input document directory (`INPUT_DOC_LOCATION`) for new PDF files and ingest them."
-)
-def scan_input_directory(
-    db: Session = Depends(get_db)
-) -> IngestionBatchResult:
-    """Trigger batch scanning over input_doc_location folder."""
-    return DocumentService.ingest_documents(db=db)
-
-
-@router.post(
-    "/{document_id}/process",
-    response_model=DocumentResponse,
-    summary="Process Freight Bill Document via OCR",
-    description="Trigger OCR pipeline processing (Mock or Google Document AI) on a document by ID."
-)
-def process_document(
-    document_id: UUID,
-    db: Session = Depends(get_db)
-) -> DocumentResponse:
-    """Process document and extract structured JSON data."""
-    return DocumentService.process_document(db=db, document_id=document_id)
 
 
 @router.post(
@@ -120,12 +94,12 @@ def reprocess_document(
 
 
 @router.put(
-    "/{document_id}/review",
+    "/{document_id}/corrections",
     response_model=DocumentResponse,
-    summary="Submit Manual Review & Corrections",
+    summary="Submit Manual Review Corrections",
     description="Submit corrected extracted fields for a document, re-evaluate validation, and update document status."
 )
-def submit_document_review(
+def submit_document_corrections(
     document_id: UUID,
     payload: DocumentReviewRequest,
     db: Session = Depends(get_db)
@@ -136,6 +110,41 @@ def submit_document_review(
         document_id=document_id,
         corrected_data=payload.extracted_data
     )
+
+
+@router.put(
+    "/{document_id}/review",
+    response_model=DocumentResponse,
+    summary="Submit Manual Review (Alias)",
+    description="Alias for submit_document_corrections."
+)
+def submit_document_review_alias(
+    document_id: UUID,
+    payload: DocumentReviewRequest,
+    db: Session = Depends(get_db)
+) -> DocumentResponse:
+    """Alias for manual review corrections."""
+    return DocumentService.submit_document_review(
+        db=db,
+        document_id=document_id,
+        corrected_data=payload.extracted_data
+    )
+
+
+@router.delete(
+    "/{document_id}",
+    summary="Delete Document",
+    description="Delete a document record and its physical stored PDF file."
+)
+def delete_document(
+    document_id: UUID,
+    db: Session = Depends(get_db)
+):
+    """Delete document by ID."""
+    deleted = DocumentService.delete_document(db=db, document_id=document_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Document not found")
+    return {"message": "Document deleted successfully", "document_id": document_id}
 
 
 @router.get(
@@ -152,14 +161,19 @@ def get_document_file(
     doc = DocumentService.get_document_by_id(db=db, document_id=document_id)
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
-    file_path = Path(doc.file_path)
-    if not file_path.exists():
-        raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.filename}")
+
+    try:
+        abs_path = StorageService.resolve_path(doc.stored_path)
+    except Exception as err:
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.original_filename}")
+
+    if not abs_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.original_filename}")
     
     disposition = "attachment" if download else "inline"
     return FileResponse(
-        path=file_path,
+        path=abs_path,
         media_type="application/pdf",
-        filename=doc.filename,
+        filename=doc.original_filename,
         content_disposition_type=disposition
     )

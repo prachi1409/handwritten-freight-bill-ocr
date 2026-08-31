@@ -11,8 +11,8 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     TESTING: bool = False
     
-    # OCR Provider: 'document_ai' (default), 'local' (offline fallback), or 'mock'
-    OCR_PROVIDER: str = "document_ai"
+    # OCR Provider: 'local' (default vision OCR), 'document_ai' (Google Cloud), or 'mock'
+    OCR_PROVIDER: str = "local"
     USE_MOCK_OCR: bool = False
 
     # Image Preprocessing Settings for Handwritten Document Enhancement
@@ -27,6 +27,7 @@ class Settings(BaseSettings):
     GOOGLE_APPLICATION_CREDENTIALS: str = ""
 
     DATABASE_URL: str = "postgresql+psycopg://postgres:password@localhost:5432/freight_ocr"
+    STORAGE_LOCATION: str = "./storage/documents"
     INPUT_DOC_LOCATION: str = "./input_doc_location"
     PROCESSED_DOCUMENTS_LOCATION: str = "./processed_documents"
 
@@ -43,6 +44,11 @@ class Settings(BaseSettings):
             (self.GOOGLE_CLOUD_PROJECT_ID or "").strip()
             and (self.DOCUMENT_AI_PROCESSOR_ID or "").strip()
         )
+
+    @property
+    def storage_path(self) -> Path:
+        """Return Path object for storage/documents directory."""
+        return Path(self.STORAGE_LOCATION).resolve()
 
     @property
     def input_path(self) -> Path:

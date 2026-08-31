@@ -6,6 +6,7 @@ from app.core.config import settings
 from app.db.models import Document
 from app.ingestion.archive import archive_inbox_file
 from app.ingestion.scanner import find_pdf_files, process_ingestion_batch
+from app.services.storage_service import StorageService
 
 
 def test_archive_moves_file_from_inbox_to_processed(monkeypatch, tmp_path, create_pdf):
@@ -58,6 +59,5 @@ def test_scan_archives_processed_file(monkeypatch, db_session, create_pdf, tmp_p
     result = process_ingestion_batch(db_session, inbox)
     assert result.ingested_count == 1
     assert not target.exists()
-    assert len(list(processed.glob("*.pdf"))) == 1
     doc = db_session.query(Document).one()
-    assert Path(doc.file_path).parent.resolve() == processed.resolve()
+    assert StorageService.resolve_path(doc.stored_path).exists()

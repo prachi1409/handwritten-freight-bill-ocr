@@ -11,6 +11,7 @@ from app.ingestion.hasher import calculate_file_hash
 from app.ingestion.validator import validate_pdf
 from app.ingestion.convert import ALLOWED_EXTENSIONS, IMAGE_EXTENSIONS, convert_image_to_pdf
 from app.schemas.document import IngestionBatchResult, IngestionItemDetail
+from app.services.storage_service import StorageService
 
 logger = logging.getLogger(__name__)
 
@@ -43,13 +44,6 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
     """Scan directory, validate documents, compute SHA-256 hashes, detect duplicates,
 
     record new pending documents in the database, and trigger OCR extraction pipeline.
-
-    Args:
-        db: SQLAlchemy Database Session.
-        input_dir: Path to directory containing incoming freight bills.
-
-    Returns:
-        IngestionBatchResult detailing batch run statistics and individual file details.
     """
     dir_path = Path(input_dir).resolve()
     logger.info(f"Scanning input directory: '{dir_path}'...")
@@ -105,16 +99,43 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
                 ))
                 continue
 
+            # Save file to storage location
+            with open(work_path, "rb") as f_bytes:
+                file_content = f_bytes.read()
+
+            stored_filename, relative_path, abs_path = StorageService.save_uploaded_file(
+                file_bytes=file_content,
+                original_filename=filename
+            )
+
+            # Count pages
+            page_count = 1
+            try:
+                import pymupdf as fitz
+                doc_pdf = fitz.open(abs_path)
+                page_count = len(doc_pdf)
+                doc_pdf.close()
+            except Exception:
+                pass
+
             # 4. Insert new PENDING Document row
             new_doc = Document(
-                filename=filename,
+                original_filename=filename,
+                stored_filename=stored_filename,
+                stored_path=relative_path,
                 file_hash=file_hash,
-                file_path=str(work_path),
-                status=DocumentStatus.PENDING
+                status=DocumentStatus.PENDING,
+                document_type="freight_bill",
+                page_count=page_count
             )
             db.add(new_doc)
             db.commit()
             db.refresh(new_doc)
+
+            # Archive original file from input directory
+            archive_inbox_file(pdf_path, dest_name=filename)
+            if work_path != pdf_path:
+                archive_inbox_file(work_path, dest_name=work_path.name)
 
             # 5. Automatically trigger OCR extraction pipeline for newly ingested document
             try:
@@ -124,9 +145,6 @@ def process_ingestion_batch(db: Session, input_dir: Union[str, Path]) -> Ingesti
             except Exception as proc_err:
                 logger.error(f"OCR processing failed during ingestion of '{filename}': {proc_err}", exc_info=True)
                 final_status = "FAILED"
-
-            if work_path != pdf_path:
-                archive_inbox_file(pdf_path, dest_name=filename)
 
             logger.info(f"New document ingested and processed successfully: '{filename}' (ID: {new_doc.id}, status: {final_status})")
             result.ingested_count += 1

@@ -22,7 +22,7 @@ def test_successful_pdf_upload(client, create_pdf, db_session):
     assert "processed successfully" in data["message"] or "uploaded successfully" in data["message"]
 
     # Verify Database record exists
-    doc = db_session.query(Document).filter(Document.filename == "sample_bill.pdf").first()
+    doc = db_session.query(Document).filter(Document.original_filename == "sample_bill.pdf").first()
     assert doc is not None
     assert doc.status in [DocumentStatus.REVIEW, DocumentStatus.COMPLETED, DocumentStatus.PENDING]
     assert doc.file_hash == data["file_hash"]

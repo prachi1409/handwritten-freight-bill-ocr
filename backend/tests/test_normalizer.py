@@ -66,12 +66,12 @@ def test_validate_extraction_status_completed():
         "consignee": "Metro Warehouse",
         "origin": "Kanpur",
         "destination": "Delhi",
-        "freight_amount": "$3,450.00"
+        "total_amount": "$3,450.00"
     }
-    status, msg = validate_extraction_status(data, confidence=0.90)
+    status, warnings = validate_extraction_status(data, confidence=0.90)
 
     assert status == DocumentStatus.COMPLETED
-    assert msg is None
+    assert warnings == []
 
 
 def test_validate_extraction_status_review_low_confidence():
@@ -80,12 +80,12 @@ def test_validate_extraction_status_review_low_confidence():
         "bill_number": "HB-78421",
         "consignor": "Sharma Industrial Supply",
         "consignee": "Metro Warehouse",
-        "freight_amount": "$3,450.00"
+        "total_amount": "$3,450.00"
     }
-    status, msg = validate_extraction_status(data, confidence=0.50)
+    status, warnings = validate_extraction_status(data, confidence=0.50)
 
     assert status == DocumentStatus.REVIEW
-    assert "Low confidence" in msg
+    assert any("Low" in w for w in warnings)
 
 
 def test_validate_extraction_status_review_missing_critical_fields():
@@ -96,10 +96,10 @@ def test_validate_extraction_status_review_missing_critical_fields():
         "origin": None,
         "destination": None
     }
-    status, msg = validate_extraction_status(data, confidence=0.90)
+    status, warnings = validate_extraction_status(data, confidence=0.90)
 
     assert status == DocumentStatus.REVIEW
-    assert "Missing" in msg
+    assert any("Missing" in w for w in warnings)
 
 
 def test_validate_extraction_status_missing_optional_field_still_completed():
@@ -111,12 +111,12 @@ def test_validate_extraction_status_missing_optional_field_still_completed():
         "consignee": "Metro Warehouse",
         "origin": "Kanpur Industrial Area, UP",
         "destination": "Delhi Hub",
-        "freight_amount": "$3,450.00"
+        "total_amount": "$3,450.00"
     }
-    status, msg = validate_extraction_status(data, confidence=0.88)
+    status, warnings = validate_extraction_status(data, confidence=0.88)
 
     assert status == DocumentStatus.COMPLETED
-    assert msg is None
+    assert warnings == []
 
 
 def test_line_items_amount_mismatch_flags_review():
@@ -134,18 +134,19 @@ def test_line_items_amount_mismatch_flags_review():
             {"item_no": "2", "description": "Pipes", "amount": "$2,000.00"}
         ]
     }
-    status, msg = validate_extraction_status(data, confidence=0.90)
+    status, warnings = validate_extraction_status(data, confidence=0.90)
 
     assert status == DocumentStatus.REVIEW
-    assert "Line item amount sum" in msg
+    assert any("Line item sum" in w for w in warnings)
 
 
 def test_failed_document_processing_updates_db(db_session):
     """Verify processing non-existent file sets document status to FAILED with error message."""
     doc = Document(
-        filename="non_existent.pdf",
+        original_filename="non_existent.pdf",
+        stored_filename="non_existent.pdf",
+        stored_path="non_existent_path.pdf",
         file_hash="hash_missing_file_000",
-        file_path="non_existent_path.pdf",
         status=DocumentStatus.PENDING
     )
     db_session.add(doc)
