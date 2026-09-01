@@ -39,8 +39,23 @@ UI: http://127.0.0.1:3000
 
 | `OCR_PROVIDER` | When to use |
 |---|---|
-| `local` | Default for development. No Google billing. Text PDFs work well; real handwriting needs Tesseract for image OCR. |
+| `local` | Default. RapidOCR reads the page; **Groq** maps English/Spanish OCR text to JSON. Regex is the fallback if Groq is off. |
 | `document_ai` | Needs project ID, processor ID, service-account JSON, **and GCP billing**. |
+
+### Spanish / English bills (Groq)
+
+1. Create a key at https://console.groq.com/keys  
+2. In `backend/.env`:
+
+```
+ENABLE_GROQ=true
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=openai/gpt-oss-20b
+```
+
+3. Restart the backend and reprocess. Logs should show `Groq + regex/spatial fallback`.
+
+Groq still needs OCR text. If RapidOCR returns empty, Groq cannot fill fields. It helps Spanish/English **labels**; it is not a vision model.
 
 Document AI credentials path is relative to `backend/`, e.g. `./credentials/your-key.json`.
 

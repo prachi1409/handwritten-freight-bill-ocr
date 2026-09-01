@@ -188,3 +188,69 @@ def test_10_ocr_review_required_preserves_review_record(db_session):
     db_session.refresh(doc)
     assert doc.status == DocumentStatus.REVIEW
     assert doc.id is not None
+
+
+def test_delete_document_removes_row_and_stored_file(client, db_session, tmp_path, monkeypatch):
+    """DELETE /api/v1/documents/{id} removes the DB row and stored PDF."""
+    from app.core.config import settings
+
+    storage_dir = tmp_path / "storage" / "documents"
+    storage_dir.mkdir(parents=True)
+    monkeypatch.setattr(settings, "STORAGE_LOCATION", str(tmp_path / "storage"))
+
+    pdf_path = storage_dir / "to_delete.pdf"
+    pdf_path.write_bytes(make_valid_pdf_bytes("Delete Me"))
+
+    doc = Document(
+        original_filename="to_delete.pdf",
+        stored_filename="to_delete.pdf",
+        stored_path=str(pdf_path),
+        file_hash="hash_delete_ui_unique",
+        status=DocumentStatus.COMPLETED,
+    )
+    db_session.add(doc)
+    db_session.commit()
+    doc_id = str(doc.id)
+
+    response = client.delete(f"/api/v1/documents/{doc_id}")
+    assert response.status_code == 200
+    assert response.json()["document_id"] == doc_id
+
+    db_session.expire_all()
+    assert db_session.query(Document).filter(Document.id == UUID(doc_id)).first() is None
+    assert not pdf_path.exists()
+
+    missing = client.delete(f"/api/v1/documents/{doc_id}")
+    assert missing.status_code == 404
+
+
+def test_translate_endpoint_is_display_only(client, db_session):
+    """POST /translate returns display values and does not rewrite extracted_data."""
+    doc = Document(
+        original_filename="hindi_bill.pdf",
+        stored_filename="hindi_bill.pdf",
+        stored_path="storage/documents/hindi_bill.pdf",
+        file_hash="hash_translate_display_only",
+        status=DocumentStatus.COMPLETED,
+        extracted_data={
+            "quantity": "३६",
+            "weight": "४३,२९०",
+            "carrier": "प्रेयरी स्टेट ट्रकिंग",
+            "bill_number": "FB-10236",
+        },
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    response = client.post(f"/api/v1/documents/{doc.id}/translate")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["persisted"] is False
+    assert body["translations"]["quantity"] == "36"
+    assert body["translations"]["weight"] == "43,290"
+    assert "bill_number" not in body["translations"]
+
+    db_session.refresh(doc)
+    assert doc.extracted_data["quantity"] == "३६"
+    assert doc.extracted_data["carrier"] == "प्रेयरी स्टेट ट्रकिंग"
+

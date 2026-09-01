@@ -12,7 +12,8 @@ import pymupdf as fitz
 
 from app.core.config import settings
 from app.ocr.base import BaseOCRProcessor, OCRResult
-from app.ocr.field_extractor import extract_freight_fields_from_text
+from app.ocr.field_extractor import FREIGHT_FIELD_KEYS, extract_freight_fields_from_text
+from app.ocr.groq_extractor import apply_llm_fields, extract_fields_with_groq
 from app.ocr.spatial_extractor import extract_fields_via_spatial_layout
 from app.ocr.intelligence import build_document_intelligence
 from app.ocr.layout import extract_layout_blocks
@@ -175,7 +176,7 @@ class LocalOCRProcessor(BaseOCRProcessor):
             text_dict = extract_freight_fields_from_text(raw_text)
 
             raw_dict = {"document_type": "freight_bill"}
-            for k in ("bill_number", "bill_date", "carrier", "invoice_number", "consignor", "consignee", "origin", "destination", "commodity_description", "quantity", "weight", "freight_amount", "total_amount", "vehicle_number", "driver_name", "pickup_time", "delivery_time", "special_instructions"):
+            for k in FREIGHT_FIELD_KEYS:
                 if spatial_dict.get(k):
                     raw_dict[k] = spatial_dict[k]
                 else:
@@ -183,6 +184,15 @@ class LocalOCRProcessor(BaseOCRProcessor):
             raw_dict["line_items"] = text_dict.get("line_items") or []
         else:
             raw_dict = extract_freight_fields_from_text(raw_text)
+
+        llm_dict = extract_fields_with_groq(raw_text)
+        field_source = "regex/spatial"
+        if llm_dict:
+            raw_dict = apply_llm_fields(raw_dict, llm_dict)
+            field_source = "groq+regex"
+            logger.info("[OCR Flow] Field source for '%s': Groq + regex/spatial fallback", path.name)
+        else:
+            logger.info("[OCR Flow] Field source for '%s': regex/spatial", path.name)
 
         if field_meta:
             raw_dict["field_metadata"] = field_meta
@@ -220,6 +230,7 @@ class LocalOCRProcessor(BaseOCRProcessor):
             "field_metadata": field_meta,
             "line_items": normalized["line_items"],
             "page_count": page_count,
+            "field_source": field_source,
             "preprocessing": {
                 "dpi": dpi,
                 "deskew_enabled": bool(getattr(settings, "DESKEW_IMAGE", True)),

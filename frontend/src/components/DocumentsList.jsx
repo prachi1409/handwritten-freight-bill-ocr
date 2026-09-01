@@ -1,8 +1,8 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, AlertCircle, Eye, Search, Filter } from 'lucide-react';
+import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, AlertCircle, Eye, Search, Filter, Trash2 } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import UploadModal from './UploadModal';
-import { fetchDocuments, fetchDocumentStats, scanDocuments } from '../api';
+import { fetchDocuments, fetchDocumentStats, scanDocuments, deleteDocument } from '../api';
 
 export default function DocumentsList({ onSelectDocument }) {
   const [documents, setDocuments] = useState([]);
@@ -20,6 +20,7 @@ export default function DocumentsList({ onSelectDocument }) {
   const [isUploadOpen, setIsUploadOpen] = useState(false);
   const [bannerMessage, setBannerMessage] = useState(null);
   const [searchText, setSearchText] = useState('');
+  const [deletingId, setDeletingId] = useState(null);
 
   const loadData = async () => {
     setIsLoading(true);
@@ -70,6 +71,27 @@ export default function DocumentsList({ onSelectDocument }) {
   const handleUploadSuccess = (result) => {
     setBannerMessage(`Upload complete: ${result.message}`);
     loadData();
+  };
+
+  const handleDeleteDocument = async (event, doc) => {
+    event.stopPropagation();
+    const filename = doc.original_filename || doc.filename || 'this document';
+    const confirmed = window.confirm(
+      `Delete "${filename}"? This removes the record and the stored file.`
+    );
+    if (!confirmed) return;
+
+    setDeletingId(doc.id);
+    setError(null);
+    try {
+      await deleteDocument(doc.id);
+      setBannerMessage(`Deleted "${filename}".`);
+      await loadData();
+    } catch (err) {
+      setError(err.message || 'Failed to delete document.');
+    } finally {
+      setDeletingId(null);
+    }
   };
 
   const filteredDocuments = documents.filter(doc => {
@@ -355,14 +377,30 @@ export default function DocumentsList({ onSelectDocument }) {
                         </div>
                       </td>
                       <td style={{ textAlign: 'right' }}>
-                        <button 
-                          className="btn btn-outline" 
-                          style={{ padding: '0.375rem 0.875rem', fontSize: '0.8125rem' }}
-                          onClick={() => onSelectDocument(doc.id)}
-                        >
-                          <Eye size={14} />
-                          <span>View</span>
-                        </button>
+                        <div style={{ display: 'inline-flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                          <button
+                            className="btn btn-outline"
+                            style={{ padding: '0.375rem 0.875rem', fontSize: '0.8125rem' }}
+                            onClick={() => onSelectDocument(doc.id)}
+                          >
+                            <Eye size={14} />
+                            <span>View</span>
+                          </button>
+                          <button
+                            className="btn btn-danger"
+                            style={{ padding: '0.375rem 0.75rem', fontSize: '0.8125rem' }}
+                            onClick={(event) => handleDeleteDocument(event, doc)}
+                            disabled={deletingId === doc.id}
+                            title="Delete document"
+                          >
+                            {deletingId === doc.id ? (
+                              <div className="spinner spinner-dark" />
+                            ) : (
+                              <Trash2 size={14} />
+                            )}
+                            <span>Delete</span>
+                          </button>
+                        </div>
                       </td>
                     </tr>
                   );

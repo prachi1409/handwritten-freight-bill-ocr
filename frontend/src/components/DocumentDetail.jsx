@@ -1,7 +1,25 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, AlignLeft, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, Cpu, Info } from 'lucide-react';
+import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, Cpu, MapPin, Package, DollarSign, Truck, Languages } from 'lucide-react';
 import StatusBadge from './StatusBadge';
-import { fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl } from '../api';
+import { fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl, deleteDocument, translateDocumentFields } from '../api';
+
+const FIELD_GROUPS = [
+  { id: 'identity', title: 'Bill identity', keys: ['bill_number', 'bill_date', 'invoice_number', 'carrier'] },
+  { id: 'parties', title: 'Parties & route', keys: ['consignor', 'consignee', 'origin', 'destination'] },
+  { id: 'cargo', title: 'Cargo', keys: ['commodity_description', 'quantity', 'weight'] },
+  { id: 'charges', title: 'Charges', keys: ['freight_amount', 'fuel_surcharge', 'handling_charge', 'total_amount'] },
+  { id: 'logistics', title: 'Logistics', keys: ['vehicle_number', 'driver_name', 'pickup_time', 'delivery_time'] },
+  { id: 'pod', title: 'Proof of delivery', keys: ['special_instructions', 'driver_signature', 'consignee_signature', 'received_datetime'] },
+];
+
+const SCHEMA_FIELD_KEYS = FIELD_GROUPS.flatMap((group) => group.keys);
+const WIDE_FIELDS = new Set(['commodity_description', 'special_instructions', 'driver_signature', 'consignee_signature']);
+const OPTIONAL_EMPTY_FIELDS = new Set(['fuel_surcharge', 'handling_charge']);
+const REQUIRED_FIELDS = new Set(['bill_number', 'consignor', 'consignee', 'origin', 'destination', 'total_amount']);
+
+function isFieldPresent(val) {
+  return val !== null && val !== undefined && String(val).trim() !== '' && String(val).trim() !== '—';
+}
 
 export default function DocumentDetail({ documentId, onBack }) {
   const [doc, setDoc] = useState(null);
@@ -13,6 +31,10 @@ export default function DocumentDetail({ documentId, onBack }) {
   const [editFormData, setEditFormData] = useState({});
   const [error, setError] = useState(null);
   const [successMessage, setSuccessMessage] = useState(null);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [showEnglish, setShowEnglish] = useState(false);
+  const [englishFields, setEnglishFields] = useState(null);
+  const [isTranslating, setIsTranslating] = useState(false);
 
   const loadDocument = async () => {
     if (!documentId) {
@@ -37,6 +59,8 @@ export default function DocumentDetail({ documentId, onBack }) {
   };
 
   useEffect(() => {
+    setShowEnglish(false);
+    setEnglishFields(null);
     if (documentId) {
       loadDocument();
     } else {
@@ -56,6 +80,35 @@ export default function DocumentDetail({ documentId, onBack }) {
     setEditFormData(doc?.extracted_data || {});
     setIsEditing(false);
     setError(null);
+  };
+
+  const handleToggleEnglish = async () => {
+    if (showEnglish) {
+      setShowEnglish(false);
+      return;
+    }
+    if (englishFields) {
+      setShowEnglish(true);
+      return;
+    }
+    setIsTranslating(true);
+    setError(null);
+    try {
+      const result = await translateDocumentFields(documentId);
+      setEnglishFields(result.translations || {});
+      setShowEnglish(true);
+    } catch (err) {
+      setError(err.message || 'Failed to translate fields.');
+    } finally {
+      setIsTranslating(false);
+    }
+  };
+
+  const displayFieldValue = (key, original) => {
+    if (!showEnglish || !englishFields || !isFieldPresent(englishFields[key])) {
+      return original;
+    }
+    return englishFields[key];
   };
 
   const handleFieldChange = (key, value) => {
@@ -119,6 +172,25 @@ export default function DocumentDetail({ documentId, onBack }) {
     }
   };
 
+  const handleDelete = async () => {
+    const filename = doc?.original_filename || doc?.filename || 'this document';
+    const confirmed = window.confirm(
+      `Delete "${filename}"?\n\nThis removes the database record and the stored PDF.`
+    );
+    if (!confirmed) return;
+
+    setIsDeleting(true);
+    setError(null);
+    setSuccessMessage(null);
+    try {
+      await deleteDocument(documentId);
+      onBack();
+    } catch (err) {
+      setIsDeleting(false);
+      setError(err.message || 'Failed to delete document.');
+    }
+  };
+
   const handleReprocess = async () => {
     setIsReprocessing(true);
     setError(null);
@@ -127,6 +199,8 @@ export default function DocumentDetail({ documentId, onBack }) {
       const updated = await reprocessDocument(documentId);
       setDoc(updated);
       setEditFormData(updated.extracted_data || {});
+      setEnglishFields(null);
+      setShowEnglish(false);
       setIsReprocessing(false);
 
       const statusUpper = (updated.status || '').toUpperCase();
@@ -170,19 +244,13 @@ export default function DocumentDetail({ documentId, onBack }) {
   const renderConfidenceBadge = (score) => {
     if (score === null || score === undefined || score === 0) return null;
     const pct = Math.round(score * 100);
-    let colorClass = '#dc2626'; // Low (red)
     let label = 'Low';
-    if (score >= 0.90) {
-      colorClass = '#16a34a'; // High (green)
-      label = 'High';
-    } else if (score >= 0.70) {
-      colorClass = '#d97706'; // Medium (amber)
-      label = 'Medium';
-    }
+    if (score >= 0.90) label = 'High';
+    else if (score >= 0.70) label = 'Medium';
 
     return (
-      <span style={{ fontSize: '0.6875rem', fontWeight: 700, color: colorClass, marginLeft: '0.5rem', display: 'inline-flex', alignItems: 'center', gap: '0.25rem' }}>
-        <span>•</span> {pct}% ({label})
+      <span className={`conf-pill ${label.toLowerCase()}`}>
+        {pct}% {label}
       </span>
     );
   };
@@ -239,24 +307,21 @@ export default function DocumentDetail({ documentId, onBack }) {
   const rawText = doc.raw_ocr_text || extractedData.raw_text || rawOcr.raw_text || '';
   const validationWarnings = doc.validation_warnings || rawOcr.validation_warnings || [];
 
-  const schemaFieldKeys = [
-    "bill_number", "bill_date", "carrier", "invoice_number",
-    "consignor", "consignee", "origin", "destination",
-    "commodity_description", "quantity", "weight",
-    "freight_amount", "total_amount", "vehicle_number",
-    "driver_name", "pickup_time", "delivery_time",
-    "special_instructions", "driver_signature", "consignee_signature", "received_datetime"
-  ];
+  const schemaFieldKeys = SCHEMA_FIELD_KEYS;
 
   const editableKeys = schemaFieldKeys.map(key => ({
     key,
     label: formatFieldLabel(key),
-    required: ["bill_number", "consignor", "consignee", "origin", "destination", "total_amount"].includes(key),
+    required: REQUIRED_FIELDS.has(key),
     type: key.includes("date") ? "date" : "text"
   }));
 
   const statusUpper = (doc.status || '').toUpperCase();
   const overallConf = doc.overall_confidence ?? doc.confidence;
+  const visibleSchemaKeys = schemaFieldKeys.filter(
+    (key) => isFieldPresent(extractedData[key]) || !OPTIONAL_EMPTY_FIELDS.has(key)
+  );
+  const detectedCount = visibleSchemaKeys.filter((key) => isFieldPresent(extractedData[key])).length;
 
   return (
     <div>
@@ -286,13 +351,22 @@ export default function DocumentDetail({ documentId, onBack }) {
             </>
           )}
 
-          <button 
-            className="btn btn-secondary" 
-            onClick={handleReprocess} 
-            disabled={isReprocessing || isEditing}
+          <button
+            className="btn btn-secondary"
+            onClick={handleReprocess}
+            disabled={isReprocessing || isEditing || isDeleting}
           >
             <RefreshCw size={16} className={isReprocessing ? 'spinner-icon' : ''} />
             <span>Reprocess OCR</span>
+          </button>
+
+          <button
+            className="btn btn-danger"
+            onClick={handleDelete}
+            disabled={isDeleting || isEditing || isReprocessing}
+          >
+            {isDeleting ? <div className="spinner spinner-dark" /> : <Trash2 size={16} />}
+            <span>Delete</span>
           </button>
         </div>
       </div>
@@ -446,42 +520,109 @@ export default function DocumentDetail({ documentId, onBack }) {
 
         {/* RIGHT COLUMN: Extracted Data / Review & Correction Form */}
         <div className="card" style={{ height: '780px', display: 'flex', flexDirection: 'column', marginBottom: 0 }}>
-          <div className="card-header" style={{ backgroundColor: isEditing ? '#eff6ff' : '#ffffff' }}>
+          <div className="card-header" style={{ backgroundColor: isEditing ? '#eff6ff' : '#f8fafc' }}>
             <div className="card-title">
               <Sparkles size={18} color="#2563eb" />
               <span>{isEditing ? 'Review & Correct Fields' : 'Structured Extracted Data'}</span>
             </div>
 
-            {isEditing ? (
-              <span className="badge badge-processing">Editing Mode</span>
-            ) : (
-              (doc.manual_corrections || extractedData.manually_corrected) && (
-                <span className="badge badge-completed">Manually Verified</span>
-              )
-            )}
+            <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              {isEditing ? (
+                <span className="badge badge-processing">Editing Mode</span>
+              ) : (
+                <>
+                  {(doc.manual_corrections || extractedData.manually_corrected) && (
+                    <span className="badge badge-completed">Manually Verified</span>
+                  )}
+                  <button
+                    className={`btn ${showEnglish ? 'btn-primary' : 'btn-outline'}`}
+                    style={{ padding: '0.3125rem 0.75rem', fontSize: '0.75rem' }}
+                    onClick={handleToggleEnglish}
+                    disabled={isTranslating}
+                    title="Show English translations without changing saved values"
+                  >
+                    {isTranslating ? <div className="spinner spinner-dark" /> : <Languages size={13} />}
+                    <span>{showEnglish ? 'Show original' : 'Show English'}</span>
+                  </button>
+                  <button
+                    className="btn btn-outline"
+                    style={{ padding: '0.3125rem 0.75rem', fontSize: '0.75rem' }}
+                    onClick={handleStartEditing}
+                  >
+                    <Edit3 size={13} />
+                    <span>Edit</span>
+                  </button>
+                </>
+              )}
+            </div>
           </div>
 
           <div style={{ flex: 1, overflowY: 'auto' }}>
             {/* READ-ONLY VIEW MODE */}
             {!isEditing ? (
               <div>
-                {/* 2-Column Compact Key-Value Grid */}
-                <div className="kv-grid-compact">
-                  {schemaFieldKeys.map((key) => {
-                    const val = extractedData[key];
-                    const confScore = fieldConfidenceMap[key];
-                    const isValPresent = val !== null && val !== undefined && String(val).trim() !== '' && String(val).trim() !== '—';
+                <div className="extract-summary">
+                  <div className="extract-summary-item">
+                    <div className="label">Bill number</div>
+                    <div className={`value${!isFieldPresent(extractedData.bill_number) ? ' muted' : ''}`}>
+                      {isFieldPresent(extractedData.bill_number) ? extractedData.bill_number : '—'}
+                    </div>
+                  </div>
+                  <div className="extract-summary-item">
+                    <div className="label">Total amount</div>
+                    <div className={`value${!isFieldPresent(extractedData.total_amount) ? ' muted' : ''}`}>
+                      {isFieldPresent(extractedData.total_amount) ? extractedData.total_amount : '—'}
+                    </div>
+                  </div>
+                  <div className="extract-summary-item">
+                    <div className="label">Fields found</div>
+                    <div className="value">{detectedCount} / {visibleSchemaKeys.length}</div>
+                  </div>
+                </div>
 
+                <div className="extract-panel-body">
+                  {FIELD_GROUPS.map((group) => {
+                    const keys = group.keys.filter(
+                      (key) => isFieldPresent(extractedData[key]) || !OPTIONAL_EMPTY_FIELDS.has(key)
+                    );
+                    if (keys.length === 0) return null;
                     return (
-                      <div key={key} className={`kv-card-item ${!isValPresent ? 'missing' : ''}`}>
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                          <div className="kv-label-text">{formatFieldLabel(key)}</div>
-                          {isValPresent && renderConfidenceBadge(confScore)}
-                        </div>
-                        <div className={`kv-value-text ${!isValPresent ? 'empty' : ''}`}>
-                          {isValPresent ? String(val) : 'Not detected'}
-                        </div>
+                    <section key={group.id} className="field-section">
+                      <div className="field-section-title">
+                        {group.id === 'parties' && <MapPin size={12} />}
+                        {group.id === 'cargo' && <Package size={12} />}
+                        {group.id === 'charges' && <DollarSign size={12} />}
+                        {group.id === 'logistics' && <Truck size={12} />}
+                        <span>{group.title}</span>
+                        <span className="line" />
                       </div>
+                      <div className="kv-grid-compact">
+                        {keys.map((key) => {
+                          const val = extractedData[key];
+                          const shown = displayFieldValue(key, val);
+                          const confScore = fieldConfidenceMap[key];
+                          const isValPresent = isFieldPresent(val);
+                          const showingTranslation = showEnglish && isFieldPresent(shown) && String(shown) !== String(val);
+                          return (
+                            <div
+                              key={key}
+                              className={`kv-card-item${isValPresent ? '' : ' missing'}${WIDE_FIELDS.has(key) ? ' span-2' : ''}`}
+                            >
+                              <div className="kv-label-row">
+                                <div className="kv-label-text">{formatFieldLabel(key)}</div>
+                                {isValPresent && renderConfidenceBadge(confScore)}
+                              </div>
+                              <div className={`kv-value-text${isValPresent ? '' : ' empty'}`}>
+                                {isValPresent ? String(shown) : 'Not detected'}
+                              </div>
+                              {showingTranslation && (
+                                <div className="kv-original-text">{val}</div>
+                              )}
+                            </div>
+                          );
+                        })}
+                      </div>
+                    </section>
                     );
                   })}
                 </div>
@@ -573,23 +714,34 @@ export default function DocumentDetail({ documentId, onBack }) {
               </div>
             ) : (
               /* EDITABLE REVIEW FORM MODE */
-              <div style={{ padding: '1.5rem' }}>
-                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', gap: '1.25rem', marginBottom: '1.5rem' }}>
-                  {editableKeys.map(({ key, label, required, type }) => (
-                    <div key={key}>
-                      <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.375rem' }}>
-                        {label} {required && <span style={{ color: '#dc2626' }}>*</span>}
-                      </label>
-                      <input 
-                        type={type || 'text'}
-                        className="form-control"
-                        value={editFormData[key] || ''}
-                        onChange={(e) => handleFieldChange(key, e.target.value)}
-                        placeholder={`Enter ${label}`}
-                      />
+              <div style={{ padding: '1.25rem' }}>
+                {FIELD_GROUPS.map((group) => (
+                  <section key={group.id} className="field-section">
+                    <div className="field-section-title">
+                      <span>{group.title}</span>
+                      <span className="line" />
                     </div>
-                  ))}
-                </div>
+                    <div className="edit-field-grid">
+                      {group.keys.map((key) => {
+                        const meta = editableKeys.find((item) => item.key === key);
+                        return (
+                          <div key={key} className={WIDE_FIELDS.has(key) ? 'span-2' : ''}>
+                            <label style={{ display: 'block', fontSize: '0.6875rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.375rem' }}>
+                              {meta.label} {meta.required && <span style={{ color: '#dc2626' }}>*</span>}
+                            </label>
+                            <input
+                              type={meta.type || 'text'}
+                              className="form-control"
+                              value={editFormData[key] || ''}
+                              onChange={(e) => handleFieldChange(key, e.target.value)}
+                              placeholder={`Enter ${meta.label}`}
+                            />
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </section>
+                ))}
 
                 {/* Editable Cargo Line Items */}
                 <div style={{ borderTop: '1px solid #e2e8f0', paddingTop: '1.25rem', marginTop: '1.25rem' }}>

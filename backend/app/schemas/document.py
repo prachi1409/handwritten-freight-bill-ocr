@@ -103,6 +103,14 @@ class IngestionBatchResult(BaseModel):
     items: List[IngestionItemDetail] = []
 
 
+class DocumentTranslateResponse(BaseModel):
+    """Display-only English translations. Not written to the document record."""
+    document_id: UUID
+    translations: Dict[str, str]
+    source: str
+    persisted: bool = False
+
+
 class DocumentUploadResponse(BaseModel):
     """Schema for single document upload response."""
     document_id: Optional[UUID] = None

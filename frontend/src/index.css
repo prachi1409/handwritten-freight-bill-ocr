@@ -124,6 +124,10 @@ body {
   padding: 2rem;
 }
 
+.main-content.wide {
+  max-width: 1440px;
+}
+
 /* Page Headers */
 .page-header {
   display: flex;
@@ -198,6 +202,17 @@ body {
 
 .btn-outline:hover:not(:disabled) {
   background-color: var(--primary-light);
+}
+
+.btn-danger {
+  background-color: #ffffff;
+  color: var(--danger);
+  border-color: var(--danger-border);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background-color: var(--danger-bg);
+  border-color: var(--danger);
 }
 
 .btn:disabled {
@@ -528,5 +543,216 @@ body {
 
 @keyframes spin {
   to { transform: rotate(360deg); }
+}
+
+/* Document detail: PDF + extracted fields */
+.detail-split-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1.5rem;
+  align-items: stretch;
+}
+
+@media (min-width: 1100px) {
+  .detail-split-grid {
+    grid-template-columns: minmax(0, 1.05fr) minmax(0, 0.95fr);
+  }
+}
+
+.extract-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  padding: 0.875rem 1.25rem;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.extract-summary-item {
+  min-width: 0;
+}
+
+.extract-summary-item .label {
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  margin-bottom: 0.125rem;
+}
+
+.extract-summary-item .value {
+  font-size: 0.9375rem;
+  font-weight: 800;
+  color: var(--text-main);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.extract-summary-item .value.muted {
+  color: var(--text-light);
+  font-weight: 600;
+}
+
+.extract-panel-body {
+  padding: 1rem 1.25rem 1.25rem;
+}
+
+.field-section {
+  margin-bottom: 1.125rem;
+}
+
+.field-section:last-of-type {
+  margin-bottom: 0;
+}
+
+.field-section-title {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-muted);
+  margin-bottom: 0.5rem;
+}
+
+.field-section-title .line {
+  flex: 1;
+  height: 1px;
+  background: var(--border-color);
+}
+
+.kv-grid-compact {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.5rem;
+}
+
+@media (min-width: 560px) {
+  .kv-grid-compact {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.kv-card-item {
+  background: #f8fafc;
+  border: 1px solid var(--border-color);
+  border-radius: 0.625rem;
+  padding: 0.7rem 0.8rem;
+  min-height: 4rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+}
+
+.kv-card-item.span-2 {
+  grid-column: 1 / -1;
+}
+
+.kv-card-item.missing {
+  background: #ffffff;
+  border-style: dashed;
+}
+
+.kv-label-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.kv-label-text {
+  font-size: 0.625rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.kv-value-text {
+  font-size: 0.9375rem;
+  font-weight: 700;
+  color: var(--text-main);
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.kv-value-text.empty {
+  font-weight: 500;
+  color: var(--text-light);
+  font-style: italic;
+}
+
+.kv-original-text {
+  margin-top: 0.2rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  word-break: break-word;
+  line-height: 1.35;
+}
+
+.conf-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.625rem;
+  font-weight: 700;
+  padding: 0.1rem 0.4rem;
+  border-radius: 9999px;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.conf-pill.high {
+  background: var(--success-bg);
+  color: var(--success);
+}
+
+.conf-pill.medium {
+  background: var(--warning-bg);
+  color: var(--warning);
+}
+
+.conf-pill.low {
+  background: var(--danger-bg);
+  color: var(--danger);
+}
+
+.edit-field-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 560px) {
+  .edit-field-grid {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.form-control {
+  width: 100%;
+  padding: 0.5rem 0.75rem;
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  font-size: 0.875rem;
+  color: var(--text-main);
+  background: #ffffff;
+  font-family: inherit;
+}
+
+.form-control:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.12);
+}
+
+@media (max-width: 640px) {
+  .extract-summary {
+    grid-template-columns: 1fr;
+  }
 }
 

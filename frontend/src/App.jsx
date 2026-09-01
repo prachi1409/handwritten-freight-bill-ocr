@@ -10,7 +10,7 @@ export default function App() {
     <div className="app-container">
       <Navbar onNavigateHome={() => setSelectedDocumentId(null)} />
 
-      <main className="main-content">
+      <main className={`main-content${selectedDocumentId ? ' wide' : ''}`}>
         {selectedDocumentId ? (
           <DocumentDetail 
             documentId={selectedDocumentId} 

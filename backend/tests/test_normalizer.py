@@ -31,6 +31,8 @@ def test_clean_identifier():
     assert clean_identifier("Vehicle #: UP-32-T-5821") == "UP-32-T-5821"
     assert clean_identifier("NO") is None
     assert clean_identifier("Handwritten") is None
+    assert clean_identifier("एफबी-१०२३६") == "FB-10236"
+    assert clean_identifier("आईएनवी-६२१") == "INV-621"
 
 
 def test_currency_normalization():

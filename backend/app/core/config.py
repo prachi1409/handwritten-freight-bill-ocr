@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     CONTRAST_ENHANCEMENT: float = 1.2
     DESKEW_IMAGE: bool = True
 
+    # Groq LLM: map OCR text (English/Spanish/etc.) onto freight JSON
+    ENABLE_GROQ: bool = True
+    GROQ_API_KEY: str = ""
+    GROQ_MODEL: str = "openai/gpt-oss-20b"
+    GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     DOCUMENT_AI_LOCATION: str = "us"
     DOCUMENT_AI_PROCESSOR_ID: str = ""

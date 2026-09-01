@@ -104,6 +104,26 @@ export async function submitDocumentReview(id, extractedData) {
 }
 
 /**
+ * Fetch display-only English translations. Does not update the stored document.
+ */
+export async function translateDocumentFields(id) {
+  const response = await fetch(`${API_BASE_URL}/documents/${id}/translate`, {
+    method: 'POST',
+  });
+  return handleResponse(response);
+}
+
+/**
+ * Delete a document record and its stored file.
+ */
+export async function deleteDocument(id) {
+  const response = await fetch(`${API_BASE_URL}/documents/${id}`, {
+    method: 'DELETE',
+  });
+  return handleResponse(response);
+}
+
+/**
  * Get direct file URL for viewing PDF.
  */
 export function getDocumentFileUrl(id) {

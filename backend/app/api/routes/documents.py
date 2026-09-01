@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.schemas.document import DocumentResponse, DocumentUploadResponse, IngestionBatchResult, DocumentStatsResponse, DocumentReviewRequest
+from app.schemas.document import DocumentResponse, DocumentUploadResponse, IngestionBatchResult, DocumentStatsResponse, DocumentReviewRequest, DocumentTranslateResponse
 from app.services.document_service import DocumentService
 from app.services.storage_service import StorageService
 
@@ -149,6 +149,30 @@ def submit_document_review_alias(
         db=db,
         document_id=document_id,
         corrected_data=payload.extracted_data
+    )
+
+
+@router.post(
+    "/{document_id}/translate",
+    response_model=DocumentTranslateResponse,
+    summary="Translate Extracted Fields for Display",
+    description="Return English display values for Hindi/other-script fields. Does not save to the database.",
+)
+def translate_document_fields(
+    document_id: UUID,
+    db: Session = Depends(get_db)
+) -> DocumentTranslateResponse:
+    """Display-only translation of extracted freight fields."""
+    doc = DocumentService.get_document_by_id(db=db, document_id=document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    from app.ocr.groq_extractor import translate_fields_for_display
+    result = translate_fields_for_display(doc.extracted_data or {})
+    return DocumentTranslateResponse(
+        document_id=document_id,
+        translations=result.get("translations") or {},
+        source=result.get("source") or "digits",
+        persisted=False,
     )
 
 

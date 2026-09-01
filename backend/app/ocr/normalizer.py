@@ -17,7 +17,8 @@ EXACT_LABEL_STOP_WORDS = {
     "ORIGIN", "DESTINATION", "TIME", "PICKUP", "DELIVERY", "RECIEVER",
     "BILLNO", "BILLNUMBER", "INVOICENUMBER", "VEHICLENUMBER", "FREIGHTAMOUNT", "TOTALAMOUNT",
     "SPECIALINSTRUCTIONS", "DRIVERNAME", "COMMODITYDESCRIPTION", "COMODTVDESCRPTON", "PICKUPIDELIVERYTIME",
-    "EREGHTAMOUNT", "DESTNATON", "NVOICE", "NOMBER", "NVOICENOMBER", "MANIFEST", "BILL OF LADING"
+    "EREGHTAMOUNT", "DESTNATON", "NVOICE", "NOMBER", "NVOICENOMBER", "MANIFEST", "BILL OF LADING",
+    "DE", "DEL", "LA", "EL", "LOS", "LAS", "OF", "THE", "AND",
 }
 
 ALL_SCHEMA_FIELDS = (
@@ -78,6 +79,28 @@ def clean_field_value(value: Optional[Any]) -> Optional[str]:
     return val_str
 
 
+_DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+_DEVANAGARI_ID_PREFIXES = (
+    (re.compile(r"^एफबी"), "FB"),
+    (re.compile(r"^एचबी"), "HB"),
+    (re.compile(r"^आईएनवी"), "INV"),
+    (re.compile(r"^इन्व"), "INV"),
+)
+
+
+def transliterate_indic_digits(value: str) -> str:
+    """Convert Devanagari digits to ASCII (३६ → 36)."""
+    return (value or "").translate(_DEVANAGARI_DIGITS)
+
+
+def transliterate_indic_identifier(value: str) -> str:
+    """Map common Hindi freight IDs (एफबी-१०२३६) to Latin (FB-10236)."""
+    text = (value or "").translate(_DEVANAGARI_DIGITS)
+    for pattern, repl in _DEVANAGARI_ID_PREFIXES:
+        text = pattern.sub(repl, text)
+    return text
+
+
 def clean_identifier(value: Optional[Any]) -> Optional[str]:
     """Extract clean identifier value and strip embedded label prefixes."""
     raw = clean_field_value(value)
@@ -94,7 +117,14 @@ def clean_identifier(value: Optional[Any]) -> Optional[str]:
     if not cleaned or is_invalid_label_value(cleaned):
         return None
 
-    if re.match(r"^[^a-zA-Z0-9]+$", cleaned):
+    cleaned = transliterate_indic_identifier(cleaned)
+
+    if len(cleaned) < 3 and not re.search(r"[\d०-९]", cleaned):
+        return None
+
+    if not re.search(r"[\w]", cleaned, flags=re.UNICODE):
+        return None
+    if re.fullmatch(r"[\W_]+", cleaned, flags=re.UNICODE):
         return None
 
     if cleaned.startswith("F3-"):

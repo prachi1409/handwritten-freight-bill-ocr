@@ -8,26 +8,29 @@ logger = logging.getLogger(__name__)
 
 # Label aliases and regex patterns for spatial matching
 LABEL_PATTERNS = {
-    "bill_number": [r"bill\s*no", r"bill\s*num", r"bill\s*#", r"bol\s*no", r"waybill"],
-    "invoice_number": [r"invoice\s*num", r"invoice\s*no", r"inv\s*no", r"inv\s*#"],
-    "bill_date": [r"date", r"dated", r"ship\s*date"],
-    "consignor": [r"consignor", r"shipper", r"billed\s*from"],
-    "consignee": [r"consignee", r"receiver", r"billed\s*to"],
-    "origin": [r"origin", r"pickup\s*loc"],
-    "destination": [r"destnaton", r"destination", r"delivery\s*loc"],
-    "vehicle_number": [r"vehicle", r"truck\s*no"],
-    "weight": [r"weight", r"gross\s*wt", r"weght"],
-    "carrier": [r"carrier\s*name\b", r"carrier\b", r"hauler", r"transporter"],
-    "commodity_description": [r"commodity\s*description", r"commodity", r"comodtv", r"cargo\s*desc"],
-    "quantity": [r"quantity", r"qty", r"ouantty", r"pallets"],
-    "driver_name": [r"driver", r"operator"],
-    "pickup_time": [r"pickup\s*time", r"pickup"],
-    "delivery_time": [r"delivery\s*time", r"delivery"],
-    "freight_amount": [r"ereghtamount", r"freight\s*amount", r"freight\s*charges"],
+    "bill_number": [r"bill\s*no", r"bill\s*num", r"bill\s*#", r"bol\s*no", r"waybill", r"n\.?\s*[ºo°]?\s*de\s+factura", r"carta\s*de\s*porte"],
+    "invoice_number": [r"invoice\s*num", r"invoice\s*no", r"inv\s*no", r"inv\s*#", r"n[úu]mero\s+de\s+factura", r"numero\s+de\s+factura"],
+    "bill_date": [r"date", r"dated", r"ship\s*date", r"fecha(?!/?hora)"],
+    "consignor": [r"consignor", r"shipper", r"billed\s*from", r"remitente", r"expedidor"],
+    "consignee": [r"consignee", r"receiver", r"billed\s*to", r"destinatario", r"consignatario"],
+    "origin": [r"origin", r"pickup\s*loc", r"origen"],
+    "destination": [r"destnaton", r"destination", r"delivery\s*loc", r"destino"],
+    "driver_signature": [r"firma\s+del\s+conductor", r"driver\s*signature"],
+    "consignee_signature": [r"firma\s+del\s+destinatario", r"consignee\s*signature", r"receiver\s*signature"],
+    "vehicle_number": [r"vehicle\s*number", r"truck\s*no", r"n[úu]mero\s+de\s+veh", r"numero\s+de\s+vehiculo"],
+    "weight": [r"weight", r"gross\s*wt", r"weght", r"peso"],
+    "carrier": [r"carrier\s*name\b", r"carrier\b", r"hauler", r"transporter", r"transportista"],
+    "commodity_description": [r"commodity\s*description", r"commodity", r"comodtv", r"cargo\s*desc", r"descripci", r"mercanc"],
+    "quantity": [r"quantity", r"qty", r"ouantty", r"pallets", r"cantidad"],
+    "driver_name": [r"driver\s*name", r"nombre\s+del\s+conductor"],
+    "pickup_time": [r"pickup\s*time", r"hora\s+de\s+recogida"],
+    "delivery_time": [r"delivery\s*time", r"hora\s+de\s+entrega"],
+    "freight_amount": [r"ereghtamount", r"freight\s*amount", r"freight\s*charges", r"importe\s+del\s+flete"],
     "fuel_surcharge": [r"fuel\s*surcharge", r"fuel\s*charge"],
     "handling_charge": [r"handling\s*charge", r"handling"],
-    "total_amount": [r"total\s*amount", r"grand\s*total"],
-    "special_instructions": [r"special", r"instructions", r"remarks"],
+    "total_amount": [r"total\s*amount", r"grand\s*total", r"importe\s+total", r"total\s*a\s*pagar"],
+    "special_instructions": [r"special\s*instructions", r"instrucciones"],
+    "received_datetime": [r"received\s*datetime", r"received\s*date", r"fecha/?hora\s+de\s+recep"],
 }
 
 LABEL_STOP_WORDS = {
@@ -66,6 +69,8 @@ def is_banner_header(text: str) -> bool:
         return False
     clean = text.strip().upper()
     if clean in BANNER_HEADER_WORDS or "MANIFEST &" in clean or "BILL OF LADING" in clean:
+        return True
+    if "FACTURA DE FLETE" in clean or "CONOCIMIENTO DE EMBARQUE" in clean:
         return True
     return False
 
