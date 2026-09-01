@@ -39,8 +39,34 @@ UI: http://127.0.0.1:3000
 
 | `OCR_PROVIDER` | When to use |
 |---|---|
-| `local` | Default for development. No Google billing. Text PDFs work well; real handwriting needs Tesseract for image OCR. |
+| `local` | Default for development. Text PDFs use the PDF text layer. Messy scans use **PaddleOCR**, then an optional **Ollama** model to map text → JSON. Regex is the fallback if Ollama is down. |
 | `document_ai` | Needs project ID, processor ID, service-account JSON, **and GCP billing**. |
+
+### Messy / handwritten scans (local)
+
+```powershell
+cd backend
+python -m pip install paddleocr numpy
+```
+
+Install [Ollama](https://ollama.com), then:
+
+```powershell
+ollama pull llama3.1
+```
+
+In `backend/.env`:
+
+```
+ENABLE_PADDLE_OCR=true
+ENABLE_OLLAMA=true
+OLLAMA_BASE_URL=http://127.0.0.1:11434
+OLLAMA_MODEL=llama3.1
+```
+
+Restart the backend. Reprocess a messy PDF. Logs should show `PaddleOCR` and either `ollama + regex fallback` or `regex` if Ollama is not running.
+
+If PaddleOCR text is still empty, a vision model in Ollama (`qwen2-vl`) is the next local step; Document AI is still the strongest option once billing is on.
 
 Document AI credentials path is relative to `backend/`, e.g. `./credentials/your-key.json`.
 

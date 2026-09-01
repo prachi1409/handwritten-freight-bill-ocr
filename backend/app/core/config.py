@@ -21,6 +21,12 @@ class Settings(BaseSettings):
     CONTRAST_ENHANCEMENT: float = 1.2
     DESKEW_IMAGE: bool = True
 
+    # Local scan OCR + optional LLM structuring (used when OCR_PROVIDER=local)
+    ENABLE_PADDLE_OCR: bool = True
+    ENABLE_OLLAMA: bool = True
+    OLLAMA_BASE_URL: str = "http://127.0.0.1:11434"
+    OLLAMA_MODEL: str = "llama3.1"
+
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     DOCUMENT_AI_LOCATION: str = "us"
     DOCUMENT_AI_PROCESSOR_ID: str = ""

@@ -10,10 +10,12 @@ import pymupdf as fitz
 
 from app.core.config import settings
 from app.ocr.base import BaseOCRProcessor, OCRResult
-from app.ocr.field_extractor import extract_freight_fields_from_text
+from app.ocr.field_extractor import extract_freight_fields_from_text, merge_structured_and_text_fields
 from app.ocr.intelligence import build_document_intelligence
 from app.ocr.layout import extract_layout_blocks
 from app.ocr.normalizer import normalize_freight_data
+from app.ocr.ollama_extractor import extract_fields_with_ollama
+from app.ocr.paddle_ocr import ocr_images_with_paddle
 from app.ocr.preprocessor import preprocess_pdf_pages_with_meta
 
 logger = logging.getLogger(__name__)
@@ -116,11 +118,21 @@ class LocalOCRProcessor(BaseOCRProcessor):
             logger.warning("[OCR Flow] Native PDF text extraction notice for '%s': %s", path.name, e)
 
         image_text = ""
+        paddle_text = ""
         if _text_is_sparse(native_text):
-            try:
-                image_text = _ocr_preprocessed_images(page_images, dpi)
-            except Exception as e:
-                logger.warning("[OCR Flow] Preprocessed-image OCR notice for '%s': %s", path.name, e)
+            if getattr(settings, "ENABLE_PADDLE_OCR", True) and not settings.TESTING:
+                try:
+                    paddle_text = ocr_images_with_paddle(page_images)
+                except Exception as e:
+                    logger.warning("[OCR Flow] PaddleOCR notice for '%s': %s", path.name, e)
+            if _text_is_sparse(paddle_text):
+                try:
+                    image_text = _ocr_preprocessed_images(page_images, dpi)
+                except Exception as e:
+                    logger.warning("[OCR Flow] Preprocessed-image OCR notice for '%s': %s", path.name, e)
+            else:
+                image_text = paddle_text
+                logger.info("[OCR Flow] Using PaddleOCR text for '%s' (%s chars).", path.name, len(paddle_text))
         else:
             logger.info(
                 "[OCR Flow] PDF text layer is rich; skipping image OCR for '%s'.",
@@ -128,6 +140,8 @@ class LocalOCRProcessor(BaseOCRProcessor):
             )
 
         raw_text, text_source = _choose_ocr_text(native_text, image_text)
+        if paddle_text.strip() and text_source == "preprocessed_image" and not _text_is_sparse(paddle_text):
+            text_source = "paddleocr"
 
         logger.info(
             "[OCR Debug] RAW EXTRACTED TEXT for '%s' (source=%s, length=%s):",
@@ -141,7 +155,14 @@ class LocalOCRProcessor(BaseOCRProcessor):
         else:
             logger.warning("[OCR Debug] RAW EXTRACTED TEXT is EMPTY for '%s'.", path.name)
 
-        raw_dict = extract_freight_fields_from_text(raw_text)
+        regex_dict = extract_freight_fields_from_text(raw_text)
+        llm_dict = extract_fields_with_ollama(raw_text)
+        if llm_dict:
+            raw_dict = merge_structured_and_text_fields(llm_dict, raw_text)
+            logger.info("[OCR Flow] Field source for '%s': ollama + regex fallback", path.name)
+        else:
+            raw_dict = regex_dict
+            logger.info("[OCR Flow] Field source for '%s': regex", path.name)
 
         logger.info("[OCR Flow] Step 3/5: Field Extraction Results for '%s':", path.name)
         for k, v in raw_dict.items():
@@ -179,6 +200,7 @@ class LocalOCRProcessor(BaseOCRProcessor):
             "line_items": normalized["line_items"],
             "page_count": len(page_images),
             "ocr_text_source": text_source,
+            "field_source": "ollama+regex" if llm_dict else "regex",
             "preprocessing": {
                 "dpi": dpi,
                 "deskew_enabled": bool(getattr(settings, "DESKEW_IMAGE", True)),
