@@ -1,15 +1,17 @@
 """Document management, upload, listing, serving, and reprocessing API routes."""
 
 import logging
+import re
 from pathlib import Path
 from typing import List, Optional
 from uuid import UUID
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
 from app.schemas.document import DocumentResponse, DocumentUploadResponse, IngestionBatchResult, DocumentStatsResponse, DocumentReviewRequest, DocumentTranslateResponse
+from app.ocr.report_pdf import build_extraction_report_pdf, render_first_page_png
 from app.services.document_service import DocumentService
 from app.services.storage_service import StorageService
 
@@ -221,4 +223,75 @@ def get_document_file(
         media_type="application/pdf",
         filename=doc.original_filename,
         content_disposition_type=disposition
+    )
+
+
+@router.get(
+    "/{document_id}/preview",
+    summary="Bill page preview image",
+    description="PNG of the first page for the review UI (no PDF viewer chrome).",
+)
+def get_document_preview(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+):
+    """Serve a PNG of page 1 so the left pane can show the bill as an image."""
+    doc = DocumentService.get_document_by_id(db=db, document_id=document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        abs_path = StorageService.resolve_path(doc.stored_path)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.original_filename}")
+    if not abs_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.original_filename}")
+    try:
+        png = render_first_page_png(abs_path)
+    except Exception as err:
+        logger.warning("Bill preview render failed for %s: %s", document_id, err)
+        raise HTTPException(status_code=500, detail="Could not render bill preview")
+    return Response(content=png, media_type="image/png", headers={"Cache-Control": "private, max-age=120"})
+
+
+def _report_download_name(original_filename: Optional[str]) -> str:
+    stem = Path(original_filename or "freight_bill").stem
+    safe = re.sub(r"[^\w.\-]+", "_", stem)[:80] or "freight_bill"
+    return f"{safe}_extraction_report.pdf"
+
+
+@router.get(
+    "/{document_id}/report",
+    summary="Download bill + extraction PDF",
+    description="Original bill page(s) followed by extracted fields and load rows.",
+)
+def get_document_extraction_report(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+):
+    """Return a PDF that contains the scanned bill and the structured extraction."""
+    doc = DocumentService.get_document_by_id(db=db, document_id=document_id)
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    try:
+        abs_path = StorageService.resolve_path(doc.stored_path)
+    except Exception:
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.original_filename}")
+    if not abs_path.exists():
+        raise HTTPException(status_code=404, detail=f"File not found on disk: {doc.original_filename}")
+    try:
+        pdf_bytes = build_extraction_report_pdf(
+            abs_path,
+            doc.extracted_data or {},
+            source_filename=doc.original_filename or "",
+            status=str(getattr(doc.status, "value", doc.status) or ""),
+            confidence=doc.overall_confidence,
+        )
+    except Exception as err:
+        logger.warning("Extraction report failed for %s: %s", document_id, err, exc_info=True)
+        raise HTTPException(status_code=500, detail="Could not build extraction report")
+    filename = _report_download_name(doc.original_filename)
+    return Response(
+        content=pdf_bytes,
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

@@ -21,7 +21,15 @@ def test_stop_words_rejection():
     assert clean_field_value("BILL") is None
     assert clean_field_value("INVOICE") is None
     assert clean_field_value("  ") is None
+    assert clean_field_value("ADDRESS") is None
+    assert clean_field_value("POINT OF DESTINATION") is None
+    assert clean_field_value("SUB-HAUL#") is None
+    assert clean_field_value("MILES") is None
+    assert clean_field_value("MHOURS") is None
+    assert clean_field_value("HOURS") is None
+    assert clean_identifier("MILES") is None
     assert clean_field_value("Sharma Industrial Supply") == "Sharma Industrial Supply"
+    assert clean_field_value("PrairieStateTrucking") == "PrairieStateTrucking"
 
 
 def test_clean_identifier():
@@ -48,6 +56,8 @@ def test_date_normalization():
     assert normalize_date("26/08/2026") == "2026-08-26"
     assert normalize_date("2026-08-26") == "2026-08-26"
     assert normalize_date("08/26/2026") == "2026-08-26"
+    assert normalize_date("DBTRSETWSBLBMD") is None
+    assert normalize_date("MO. 2 DAY 2 YR. 26") == "2026-02-02"
 
 
 def test_no_hallucinated_placeholder_values():

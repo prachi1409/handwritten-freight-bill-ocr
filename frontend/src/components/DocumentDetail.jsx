@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, Cpu, MapPin, Package, DollarSign, Truck, Languages } from 'lucide-react';
+import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, Cpu, MapPin, Package, DollarSign, Truck, Languages, Download } from 'lucide-react';
 import StatusBadge from './StatusBadge';
-import { fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl, deleteDocument, translateDocumentFields } from '../api';
+import { fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl, getDocumentPreviewUrl, downloadExtractionReport, deleteDocument, translateDocumentFields } from '../api';
 
 const FIELD_GROUPS = [
   { id: 'identity', title: 'Bill identity', keys: ['bill_number', 'bill_date', 'invoice_number', 'carrier'] },
@@ -35,6 +35,7 @@ export default function DocumentDetail({ documentId, onBack }) {
   const [showEnglish, setShowEnglish] = useState(false);
   const [englishFields, setEnglishFields] = useState(null);
   const [isTranslating, setIsTranslating] = useState(false);
+  const [isDownloadingReport, setIsDownloadingReport] = useState(false);
 
   const loadDocument = async () => {
     if (!documentId) {
@@ -219,6 +220,19 @@ export default function DocumentDetail({ documentId, onBack }) {
     }
   };
 
+  const handleDownloadReport = async () => {
+    if (!doc?.id) return;
+    setIsDownloadingReport(true);
+    setError(null);
+    try {
+      await downloadExtractionReport(doc.id, doc.original_filename || doc.filename);
+    } catch (err) {
+      setError(err.message || 'Failed to download extraction report.');
+    } finally {
+      setIsDownloadingReport(false);
+    }
+  };
+
   const formatDate = (dateStr) => {
     if (!dateStr) return '—';
     try {
@@ -304,6 +318,7 @@ export default function DocumentDetail({ documentId, onBack }) {
   const fieldConfidenceMap = doc.field_confidence || extractedData.field_confidence || {};
   const rawOcr = doc.ocr_metadata || doc.raw_ocr || {};
   const lineItems = Array.isArray(extractedData.line_items) ? extractedData.line_items : [];
+  const hasLoadRows = lineItems.some((item) => item.load_arrive || item.load_depart || item.tag || (item.weight && (item.load_arrive || item.load_depart)));
   const rawText = doc.raw_ocr_text || extractedData.raw_text || rawOcr.raw_text || '';
   const validationWarnings = doc.validation_warnings || rawOcr.validation_warnings || [];
 
@@ -350,6 +365,16 @@ export default function DocumentDetail({ documentId, onBack }) {
               </button>
             </>
           )}
+
+          <button
+            className="btn btn-secondary"
+            onClick={handleDownloadReport}
+            disabled={isDownloadingReport || isEditing || isDeleting}
+            title="Download a PDF with the bill and extracted fields"
+          >
+            {isDownloadingReport ? <div className="spinner spinner-dark" /> : <Download size={16} />}
+            <span>Download report</span>
+          </button>
 
           <button
             className="btn btn-secondary"
@@ -487,8 +512,9 @@ export default function DocumentDetail({ documentId, onBack }) {
           <div className="card-header" style={{ backgroundColor: '#f8fafc' }}>
             <div className="card-title">
               <FileText size={18} color="#2563eb" />
-              <span>Original Document Preview</span>
+              <span>Bill</span>
             </div>
+            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
             <a 
               href={getDocumentFileUrl(doc.id)} 
               target="_blank" 
@@ -499,22 +525,24 @@ export default function DocumentDetail({ documentId, onBack }) {
               <ExternalLink size={13} />
               <span>Open PDF</span>
             </a>
+            <button
+              className="btn btn-secondary"
+              style={{ padding: '0.3125rem 0.75rem', fontSize: '0.75rem' }}
+              onClick={handleDownloadReport}
+              disabled={isDownloadingReport}
+              title="Download bill + extracted fields as PDF"
+            >
+              {isDownloadingReport ? <div className="spinner spinner-dark" /> : <Download size={13} />}
+              <span>Download report</span>
+            </button>
+            </div>
           </div>
 
-          <div style={{ flex: 1, backgroundColor: '#f1f5f9', overflow: 'hidden' }}>
-            <object 
-              data={getDocumentFileUrl(doc.id)} 
-              type="application/pdf" 
-              width="100%" 
-              height="100%"
-              style={{ border: 'none', display: 'block' }}
-            >
-              <iframe 
-                src={getDocumentFileUrl(doc.id)} 
-                title={`Preview ${doc.filename}`}
-                style={{ width: '100%', height: '100%', border: 'none' }}
-              />
-            </object>
+          <div className="bill-preview-pane">
+            <img
+              src={getDocumentPreviewUrl(doc.id)}
+              alt={doc.original_filename || doc.filename || 'Freight bill'}
+            />
           </div>
         </div>
 
@@ -609,7 +637,13 @@ export default function DocumentDetail({ documentId, onBack }) {
                               className={`kv-card-item${isValPresent ? '' : ' missing'}${WIDE_FIELDS.has(key) ? ' span-2' : ''}`}
                             >
                               <div className="kv-label-row">
-                                <div className="kv-label-text">{formatFieldLabel(key)}</div>
+                                <div className="kv-label-text">
+                                  {key === 'pickup_time' && hasLoadRows
+                                    ? 'Pickup time (first load in)'
+                                    : key === 'delivery_time' && hasLoadRows
+                                      ? 'Delivery time (last load out)'
+                                      : formatFieldLabel(key)}
+                                </div>
                                 {isValPresent && renderConfidenceBadge(confScore)}
                               </div>
                               <div className={`kv-value-text${isValPresent ? '' : ' empty'}`}>
@@ -632,7 +666,9 @@ export default function DocumentDetail({ documentId, onBack }) {
                   <div style={{ borderTop: '1px solid #e2e8f0', marginTop: '0.5rem' }}>
                     <div style={{ padding: '1rem 1.5rem', backgroundColor: '#f8fafc', borderBottom: '1px solid #e2e8f0', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
                       <ListFilter size={16} color="#2563eb" />
-                      <h4 style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#0f172a' }}>Cargo Line Items ({lineItems.length})</h4>
+                      <h4 style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#0f172a' }}>
+                        {hasLoadRows ? `Loads (${lineItems.length})` : `Cargo Line Items (${lineItems.length})`}
+                      </h4>
                     </div>
                     <div className="table-container">
                       <table className="data-table">
@@ -640,9 +676,22 @@ export default function DocumentDetail({ documentId, onBack }) {
                           <tr>
                             <th>Item</th>
                             <th>Description</th>
-                            <th>Qty</th>
-                            <th>Rate</th>
-                            <th style={{ textAlign: 'right' }}>Amount</th>
+                            {hasLoadRows ? (
+                              <>
+                                <th>Tag</th>
+                                <th>Weight</th>
+                                <th>Load in</th>
+                                <th>Load out</th>
+                                <th>Unload in</th>
+                                <th>Unload out</th>
+                              </>
+                            ) : (
+                              <>
+                                <th>Qty</th>
+                                <th>Rate</th>
+                                <th style={{ textAlign: 'right' }}>Amount</th>
+                              </>
+                            )}
                           </tr>
                         </thead>
                         <tbody>
@@ -650,9 +699,22 @@ export default function DocumentDetail({ documentId, onBack }) {
                             <tr key={idx}>
                               <td style={{ fontWeight: 700 }}>{item.item_no || idx + 1}</td>
                               <td style={{ fontWeight: 600 }}>{item.description || '—'}</td>
-                              <td>{item.quantity || '—'}</td>
-                              <td>{item.rate || '—'}</td>
-                              <td style={{ textAlign: 'right', fontWeight: 700 }}>{item.amount || '—'}</td>
+                              {hasLoadRows ? (
+                                <>
+                                  <td>{item.tag || '—'}</td>
+                                  <td>{item.weight || '—'}</td>
+                                  <td>{item.load_arrive || '—'}</td>
+                                  <td>{item.load_depart || '—'}</td>
+                                  <td>{item.unload_arrive || '—'}</td>
+                                  <td>{item.unload_depart || '—'}</td>
+                                </>
+                              ) : (
+                                <>
+                                  <td>{item.quantity || '—'}</td>
+                                  <td>{item.rate || '—'}</td>
+                                  <td style={{ textAlign: 'right', fontWeight: 700 }}>{item.amount || '—'}</td>
+                                </>
+                              )}
                             </tr>
                           ))}
                         </tbody>

@@ -9,6 +9,14 @@ def test_parse_groq_json_from_fenced_response():
     assert payload["bill_number"] == "CP-12"
 
 
+def test_parse_groq_json_from_thinking_wrapper():
+    payload = _extract_json_object(
+        '<think>need json</think>\nHere:\n{"consignor": "BELL MARINE", "weight": "17.85"}\n'
+    )
+    assert payload["consignor"] == "BELL MARINE"
+    assert payload["weight"] == "17.85"
+
+
 def test_parse_llm_fields_keeps_schema():
     parsed = parse_llm_fields({
         "bill_number": "CP-9",
@@ -37,6 +45,24 @@ def test_apply_llm_ignores_placeholder_values():
     assert merged["freight_amount"] == "564.90"
     assert merged["driver_name"] == "Mike Donovan"
     assert merged["vehicle_number"] == "197"
+
+
+def test_apply_llm_skips_ocr_junk_and_duplicate_parties():
+    base = {"consignor": "Bell Marine", "consignee": ""}
+    llm = {"consignor": "BElIm Ae ME", "consignee": "Bell Marine", "commodity_description": "Qee"}
+    merged = apply_llm_fields(base, llm)
+    assert merged["consignor"] == "Bell Marine"
+    assert merged.get("consignee") != "Bell Marine" or merged.get("consignee") in (None, "")
+    assert merged.get("commodity_description") in (None, "", [])
+
+
+def test_apply_llm_skips_form_header_labels():
+    base = {"origin": "123 Vernalis Rd", "consignor": "Granite Vernalis"}
+    llm = {"origin": "ADDRESS", "consignor": "SHIPPER", "destination": "Tracy, CA"}
+    merged = apply_llm_fields(base, llm)
+    assert merged["origin"] == "123 Vernalis Rd"
+    assert merged["consignor"] == "Granite Vernalis"
+    assert merged["destination"] == "Tracy, CA"
 
 
 def test_spanish_factura_de_flete_does_not_steal_invoice():
@@ -151,3 +177,87 @@ def test_translate_fields_for_display_converts_digits_without_saving():
     assert "bill_number" not in result["translations"]
     assert "total_amount" not in result["translations"]
     assert "carrier" not in result["translations"]
+
+
+def test_looks_like_permit_number():
+    from app.ocr.groq_extractor import looks_like_permit_number
+
+    assert looks_like_permit_number("CA0385520") is True
+    assert looks_like_permit_number("CA 0385520") is True
+    assert looks_like_permit_number("INV-30931") is False
+
+
+def test_encode_images_for_groq_vision_makes_jpeg_data_url():
+    from PIL import Image
+    from app.ocr.groq_extractor import encode_images_for_groq_vision
+
+    img = Image.new("RGB", (2200, 1600), "white")
+    urls = encode_images_for_groq_vision([img], max_pages=1, max_edge=800)
+    assert len(urls) == 1
+    assert urls[0].startswith("data:image/jpeg;base64,")
+    assert len(urls[0]) < 200_000
+
+
+def test_apply_vision_fields_reads_handwriting_and_drops_permit_invoice():
+    from app.ocr.groq_extractor import apply_vision_fields
+
+    base = {
+        "consignor": "CALIFORNIA MATERIALS, INC.",
+        "consignee": "",
+        "carrier": "AGGREGATES•TRUCKING",
+        "invoice_number": "CA0385520",
+        "origin": "MARINE",
+        "destination": "",
+    }
+    vision = {
+        "consignor": "BELL MARINE",
+        "consignee": "CORONE & CO",
+        "carrier": "CALIFORNIA MATERIALS, INC.",
+        "invoice_number": "",
+        "origin": "",
+        "destination": "CANNON LANDFILL",
+        "bill_number": "16766-1",
+        "pickup_time": "9:30",
+        "weight": "12.85",
+        "line_items": [{"tag": "4124", "weight": "12.85", "load_arrive": "9:30", "load_depart": "10:20"}],
+    }
+    merged = apply_vision_fields(base, vision)
+    assert merged["consignor"] == "BELL MARINE"
+    assert merged["consignee"] == "CORONE & CO"
+    assert merged["carrier"] == "CALIFORNIA MATERIALS, INC."
+    assert merged.get("invoice_number") in (None, "")
+    assert merged["destination"] == "CANNON LANDFILL"
+    assert merged.get("origin") in (None, "")
+    assert merged["bill_number"] == "16766-1"
+    assert merged["line_items"][0]["tag"] == "4124"
+
+
+def test_extract_fields_with_groq_vision_sends_image_url(monkeypatch):
+    from PIL import Image
+    from app.ocr import groq_extractor as ge
+
+    monkeypatch.setattr(ge.settings, "TESTING", False)
+    monkeypatch.setattr(ge.settings, "ENABLE_GROQ", True)
+    monkeypatch.setattr(ge.settings, "ENABLE_GROQ_VISION", True)
+    monkeypatch.setattr(ge.settings, "GROQ_API_KEY", "gsk_test")
+    monkeypatch.setattr(ge.settings, "GROQ_VISION_MODEL", "qwen/qwen3.6-27b")
+
+    captured = {}
+
+    def fake_parse(messages, model, timeout=90.0, vision=False):
+        captured["messages"] = messages
+        captured["model"] = model
+        captured["vision"] = vision
+        return {"consignor": "BELL MARINE", "consignee": "CORONE & CO", "bill_number": "16766-1"}
+
+    monkeypatch.setattr(ge, "_groq_chat_parse", fake_parse)
+    img = Image.new("RGB", (100, 80), "white")
+    fields = ge.extract_fields_with_groq_vision([img])
+    assert fields["consignor"] == "BELL MARINE"
+    assert fields["consignee"] == "CORONE & CO"
+    user = captured["messages"][1]["content"]
+    assert user[0]["type"] == "text"
+    assert user[1]["type"] == "image_url"
+    assert user[1]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert captured["model"] == "qwen/qwen3.6-27b"
+    assert captured["vision"] is True

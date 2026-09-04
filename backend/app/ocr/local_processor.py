@@ -12,8 +12,13 @@ import pymupdf as fitz
 
 from app.core.config import settings
 from app.ocr.base import BaseOCRProcessor, OCRResult
-from app.ocr.field_extractor import FREIGHT_FIELD_KEYS, extract_freight_fields_from_text
-from app.ocr.groq_extractor import apply_llm_fields, extract_fields_with_groq
+from app.ocr.field_extractor import FREIGHT_FIELD_KEYS, extract_freight_fields_from_text, pick_extracted_value
+from app.ocr.groq_extractor import (
+    apply_llm_fields,
+    apply_vision_fields,
+    extract_fields_with_groq,
+    extract_fields_with_groq_vision,
+)
 from app.ocr.spatial_extractor import extract_fields_via_spatial_layout
 from app.ocr.intelligence import build_document_intelligence
 from app.ocr.layout import extract_layout_blocks
@@ -177,22 +182,25 @@ class LocalOCRProcessor(BaseOCRProcessor):
 
             raw_dict = {"document_type": "freight_bill"}
             for k in FREIGHT_FIELD_KEYS:
-                if spatial_dict.get(k):
-                    raw_dict[k] = spatial_dict[k]
-                else:
-                    raw_dict[k] = text_dict.get(k)
+                raw_dict[k] = pick_extracted_value(k, spatial_dict.get(k), text_dict.get(k))
             raw_dict["line_items"] = text_dict.get("line_items") or []
         else:
             raw_dict = extract_freight_fields_from_text(raw_text)
 
-        llm_dict = extract_fields_with_groq(raw_text)
+        vision_dict = extract_fields_with_groq_vision(page_images)
         field_source = "regex/spatial"
-        if llm_dict:
-            raw_dict = apply_llm_fields(raw_dict, llm_dict)
-            field_source = "groq+regex"
-            logger.info("[OCR Flow] Field source for '%s': Groq + regex/spatial fallback", path.name)
+        if vision_dict:
+            raw_dict = apply_vision_fields(raw_dict, vision_dict)
+            field_source = "groq-vision+regex"
+            logger.info("[OCR Flow] Field source for '%s': Groq vision + regex/spatial fallback", path.name)
         else:
-            logger.info("[OCR Flow] Field source for '%s': regex/spatial", path.name)
+            llm_dict = extract_fields_with_groq(raw_text)
+            if llm_dict:
+                raw_dict = apply_llm_fields(raw_dict, llm_dict)
+                field_source = "groq+regex"
+                logger.info("[OCR Flow] Field source for '%s': Groq text + regex/spatial fallback", path.name)
+            else:
+                logger.info("[OCR Flow] Field source for '%s': regex/spatial", path.name)
 
         if field_meta:
             raw_dict["field_metadata"] = field_meta

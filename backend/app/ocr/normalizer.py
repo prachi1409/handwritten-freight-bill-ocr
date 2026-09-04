@@ -19,7 +19,19 @@ EXACT_LABEL_STOP_WORDS = {
     "SPECIALINSTRUCTIONS", "DRIVERNAME", "COMMODITYDESCRIPTION", "COMODTVDESCRPTON", "PICKUPIDELIVERYTIME",
     "EREGHTAMOUNT", "DESTNATON", "NVOICE", "NOMBER", "NVOICENOMBER", "MANIFEST", "BILL OF LADING",
     "DE", "DEL", "LA", "EL", "LOS", "LAS", "OF", "THE", "AND",
+    "ADDRESS", "SUBHAUL", "TAGNUMBER", "STREETCITY", "STREETANDCITY",
+    "POINTOFORIGIN", "POINTOFDESTINATION",
+    "ARRIVED", "DEPART", "REMARKS", "TONNAGE", "HOURLY", "LOADING", "UNLOADING",
+    "BILLTO", "JOBNAME", "TRAILEROWNER", "TRUCKNO", "TRUCKLICENSE", "TRAILERLICENSE",
+    "PAYROLL", "SIGNATURE", "START",
+    "MILES", "HOURS", "TOTALHOURS", "MHOURS", "STARTHOURS", "TOTALMILES", "STARTMILES",
 }
+
+_HEADER_COLLAPSED_FRAGMENTS = (
+    "POINTOFORIGIN", "POINTOFDESTINATION", "SUBHAUL", "TAGNUMBER",
+    "STREETCITY", "STREETANDCITY", "ADDRESSORJOB",
+    "TRAILEROWNER", "TRUCKLICENSE", "TRAILERLICENSE",
+)
 
 ALL_SCHEMA_FIELDS = (
     "bill_number",
@@ -63,10 +75,57 @@ def is_invalid_label_value(val: str) -> bool:
     """True if string is purely a form label header."""
     if not val:
         return True
+    if re.search(r"\d", str(val)):
+        return False
     clean = re.sub(r"[^A-Za-z]+", "", str(val).upper())
     if not clean:
         return False
     return clean in EXACT_LABEL_STOP_WORDS
+
+
+def is_form_header_value(val: Any) -> bool:
+    """True for printed form chrome (ADDRESS, POINT OF DESTINATION, SUB-HAUL#) used as a field value."""
+    if val is None:
+        return True
+    text = str(val).strip()
+    if not text:
+        return True
+    if is_invalid_label_value(text):
+        return True
+    collapsed = re.sub(r"[^A-Za-z]+", "", text.upper())
+    if any(frag in collapsed for frag in _HEADER_COLLAPSED_FRAGMENTS):
+        return True
+    if re.search(r"point\s+of\s+(origin|destination)", text, re.IGNORECASE):
+        return True
+    if re.search(r"sub[\s-]*haul", text, re.IGNORECASE) and not re.search(r"[A-Za-z]{4,}\s+(LLC|INC|CORP)", text, re.IGNORECASE):
+        if len(collapsed) <= 16:
+            return True
+    return False
+
+
+def looks_like_ocr_junk(val: Any) -> bool:
+    """True for glyph salad (Qee, BElIm Ae ME, RN Alo YRZ) that should not be stored as a name."""
+    if val is None:
+        return False
+    text = str(val).strip()
+    if not text:
+        return False
+    if is_form_header_value(text):
+        return True
+    letters = re.sub(r"[^A-Za-z]", "", text)
+    if 0 < len(letters) <= 3:
+        return True
+    tokens = re.findall(r"[A-Za-z]+", text)
+    if not tokens:
+        return False
+    if len(tokens) >= 3 and all(len(t) <= 3 for t in tokens):
+        return True
+    for token in tokens:
+        if len(token) <= 7:
+            flips = sum(1 for a, b in zip(token, token[1:]) if a.isupper() != b.isupper())
+            if flips >= 3:
+                return True
+    return False
 
 
 def clean_field_value(value: Optional[Any]) -> Optional[str]:
@@ -74,9 +133,36 @@ def clean_field_value(value: Optional[Any]) -> Optional[str]:
     if value is None:
         return None
     val_str = str(value).strip()
-    if not val_str or is_invalid_label_value(val_str):
+    if not val_str or is_form_header_value(val_str):
+        return None
+    val_str = re.sub(
+        r"^(?:address|street(?:\s+and)?\s+city|tag\s*(?:number|#)?|sub[\s-]*haul\s*#?)\s*[:#-]?\s*",
+        "",
+        val_str,
+        flags=re.IGNORECASE,
+    ).strip()
+    if not val_str or is_form_header_value(val_str):
         return None
     return val_str
+
+
+def unglue_ocr_words(value: str) -> str:
+    """Insert spaces RapidOCR often drops (GraniteVernalis, CALIFORNIAMATERIALS,INC.)."""
+    text = (value or "").strip()
+    if not text:
+        return text
+    text = re.sub(
+        r"(?<=[A-Za-z])(MATERIALS|TRUCKING|CONCRETE|LOGISTICS|TRANSPORT|HAULING|EXPRESS|CARRIERS)\b",
+        r" \1",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(r"([a-z])([A-Z])", r"\1 \2", text)
+    text = re.sub(r"([A-Z]{2,})([A-Z][a-z])", r"\1 \2", text)
+    text = re.sub(r"\s*,\s*(INC|LLC|CORP|LTD)\.?", r", \1.", text, flags=re.IGNORECASE)
+    text = re.sub(r",\s*,", ",", text)
+    text = re.sub(r"\s+", " ", text)
+    return text.strip()
 
 
 _DEVANAGARI_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
@@ -114,7 +200,7 @@ def clean_identifier(value: Optional[Any]) -> Optional[str]:
         flags=re.IGNORECASE
     ).strip()
 
-    if not cleaned or is_invalid_label_value(cleaned):
+    if not cleaned or is_form_header_value(cleaned):
         return None
 
     cleaned = transliterate_indic_identifier(cleaned)
@@ -162,7 +248,7 @@ def normalize_date(value: Optional[Any]) -> Optional[str]:
     if value is None:
         return None
     val_str = str(value).strip()
-    if not val_str or is_invalid_label_value(val_str):
+    if not val_str or is_form_header_value(val_str):
         return None
 
     match_slash = re.search(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b", val_str)
@@ -191,39 +277,153 @@ def normalize_date(value: Optional[Any]) -> Optional[str]:
         except ValueError:
             pass
 
-    return val_str
+    mo = re.search(r"\bMO\.?\s*(\d{1,2})\b", val_str, re.IGNORECASE)
+    day = re.search(r"\bDAY\.?\s*(\d{1,2})\b", val_str, re.IGNORECASE)
+    yr = re.search(r"\bYR\.?\s*(\d{2,4})\b", val_str, re.IGNORECASE)
+    if mo and day and yr:
+        month, day_n, year = int(mo.group(1)), int(day.group(1)), int(yr.group(1))
+        if year < 100:
+            year += 2000
+        try:
+            return datetime(year, month, day_n).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    boxed = parse_boxed_month_day_year(val_str)
+    if boxed:
+        return boxed
+
+    return None
+
+
+def parse_boxed_month_day_year(raw_text: str) -> Optional[str]:
+    """Parse form boxes like MO. 2  DAY 2  YR. 26 into YYYY-MM-DD.
+
+    Digits must sit near a YR box so JOB DAY 1105-2 is not treated as a day.
+    """
+    if not raw_text:
+        return None
+    for yr_m in re.finditer(r"\bYR\.?\s*(\d{2,4})\b", raw_text, re.IGNORECASE):
+        start = max(0, yr_m.start() - 160)
+        end = min(len(raw_text), yr_m.end() + 160)
+        window = raw_text[start:end]
+        mo = re.search(r"\bMO\.?\s*(\d{1,2})\b", window, re.IGNORECASE)
+        day = re.search(r"\bDAY\.?\s*(\d{1,2})\b", window, re.IGNORECASE)
+        if not (mo and day):
+            continue
+        month, day_n, year = int(mo.group(1)), int(day.group(1)), int(yr_m.group(1))
+        if year < 100:
+            year += 2000
+        try:
+            return datetime(year, month, day_n).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+    return None
 
 
 def normalize_location(value: Optional[Any]) -> Optional[str]:
     """Normalize city/state location string spacing (e.g. 'Columbus,OH' -> 'Columbus, OH')."""
     cleaned = clean_field_value(value)
-    if not cleaned:
+    if not cleaned or is_form_header_value(cleaned):
         return None
+    cleaned = unglue_ocr_words(cleaned)
+    cleaned = re.sub(r"\b([A-Z])([A-Z][a-z]{2,})\b", r"\1 \2", cleaned)
+    cleaned = re.sub(r"\bBd\b", "Rd", cleaned)
     cleaned = re.sub(r"([A-Za-z]+),([A-Za-z]{2})\b", r"\1, \2", cleaned)
     return cleaned
 
 
 def normalize_weight(value: Optional[Any]) -> Optional[str]:
-    """Normalize weight string unit artifacts (e.g. '32,450los' -> '32,450 lbs', '14.920lbs' -> '14,920 lbs')."""
+    """Normalize weight; strip glued clock times (e.g. '27.0215:20 5:27' -> '27.02')."""
     cleaned = clean_field_value(value)
-    if not cleaned:
+    if not cleaned or is_form_header_value(cleaned):
         return None
 
+    cleaned = re.sub(r"\d{1,2}:\d{2}(?:\s*[AaPp]\.?\s*[Mm]\.?)?", " ", cleaned)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
     cleaned = re.sub(r"(\d+)\.(\d{3})(?=[a-zA-Z\s]|$)", r"\1,\2", cleaned)
-    cleaned = re.sub(r"(\d+(?:,\d{3})*)\s*(?:lbs|los|1os|Ibs|LBS|Ib)\b", r"\1 lbs", cleaned, flags=re.IGNORECASE)
+    cleaned = re.sub(r"(\d+(?:,\d{3})*(?:\.\d+)?)\s*(?:lbs|los|1os|Ibs|LBS|Ib)\b", r"\1 lbs", cleaned, flags=re.IGNORECASE)
 
-    return cleaned
+    match = re.search(r"(\d{1,3}(?:,\d{3})*(?:\.\d+)?|\d+\.\d+)", cleaned)
+    if not match:
+        return None
+    num = match.group(1)
+    if re.search(r"\blbs\b", cleaned, re.IGNORECASE):
+        return f"{num} lbs"
+    return num
+
+
+def compact_digits_to_clock(value: str) -> Optional[str]:
+    """Convert compact handwritten times: 930 → 9:30, 1020 → 10:20."""
+    digits = re.sub(r"\D", "", str(value or ""))
+    if len(digits) == 3:
+        hour, minute = int(digits[0]), int(digits[1:])
+    elif len(digits) == 4:
+        hour, minute = int(digits[:2]), int(digits[2:])
+    else:
+        return None
+    if hour > 23 or minute > 59:
+        return None
+    if hour == 0 and minute == 0:
+        return None
+    return f"{hour}:{minute:02d}"
+
+
+def normalize_clock_time(value: Optional[Any]) -> Optional[str]:
+    """Normalize '5:20', '5:20 AM', or compact '930' / '1020' to H:MM."""
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or is_form_header_value(text):
+        return None
+    colon = re.search(r"\b(\d{1,2}):(\d{2})\b", text)
+    if colon:
+        hour, minute = int(colon.group(1)), int(colon.group(2))
+        if 0 <= hour <= 23 and 0 <= minute <= 59:
+            suffix = re.search(r"\s*([AaPp]\.?\s*[Mm]\.?)", text[colon.end():])
+            out = f"{hour}:{minute:02d}"
+            if suffix:
+                out += " " + re.sub(r"\s+", "", suffix.group(1)).upper().replace(".", "")
+            return out
+    compact = compact_digits_to_clock(text)
+    return compact
+
+
+def field_shape_ok(field: str, val: Any) -> bool:
+    """True when a normalized value looks like the schema field, not OCR chrome."""
+    if val is None or str(val).strip() == "":
+        return False
+    text = str(val).strip()
+    if is_form_header_value(text):
+        return False
+    if field == "bill_date":
+        return bool(re.match(r"^\d{4}-\d{2}-\d{2}$", text))
+    if field in ("freight_amount", "fuel_surcharge", "handling_charge", "total_amount"):
+        return bool(re.match(r"^\$\d", text))
+    if field == "weight":
+        return bool(re.search(r"\d", text)) and not re.search(r"\d{1,2}:\d{2}", text)
+    if field in ("pickup_time", "delivery_time"):
+        return bool(re.search(r"\d{1,2}:\d{2}", text))
+    if field == "vehicle_number":
+        return bool(re.search(r"\d", text)) and not re.search(r"miles|hours", text, re.IGNORECASE)
+    if field == "special_instructions":
+        letters = re.sub(r"[^A-Za-z]", "", text)
+        return len(letters) >= 4
+    if field in ("consignor", "consignee", "origin", "destination", "commodity_description", "driver_name"):
+        if re.search(r"hours|miles", text, re.IGNORECASE):
+            return False
+        return not looks_like_ocr_junk(text)
+    return True
 
 
 def calculate_field_confidences(extracted: Dict[str, Any], raw_text: str = "") -> Dict[str, float]:
     """Calculate evidence-based field-level confidence scores (0.0 to 1.0) for every schema field."""
     confidences: Dict[str, float] = {}
     is_manual = bool(extracted.get("manually_corrected") or extracted.get("reviewed"))
-    raw_meta = extracted.get("field_metadata") or {}
 
     for field in ALL_SCHEMA_FIELDS:
         val = extracted.get(field)
-        if val is None or str(val).strip() == "" or is_invalid_label_value(str(val)):
+        if val is None or str(val).strip() == "" or is_form_header_value(str(val)) or not field_shape_ok(field, val):
             confidences[field] = 0.0
             continue
 
@@ -231,14 +431,8 @@ def calculate_field_confidences(extracted: Dict[str, Any], raw_text: str = "") -
             confidences[field] = 1.0
             continue
 
-        if field in raw_meta and isinstance(raw_meta[field], dict) and "confidence" in raw_meta[field]:
-            conf = float(raw_meta[field]["confidence"])
-            conf = min(max(conf, 0.50), 0.98)
-            confidences[field] = round(conf, 2)
-            continue
-
-        base_score = 0.85
         val_str = str(val).strip()
+        base_score = 0.85
 
         if field == "bill_number":
             if re.match(r"^[A-Z0-9-]{3,20}$", val_str):
@@ -255,6 +449,8 @@ def calculate_field_confidences(extracted: Dict[str, Any], raw_text: str = "") -
         elif field == "vehicle_number":
             if re.match(r"^[A-Z0-9-]{2,10}$", val_str):
                 base_score = 0.95
+        elif field == "weight":
+            base_score = 0.88
 
         confidences[field] = round(base_score, 2)
 
@@ -270,7 +466,7 @@ def validate_extraction_data(data: Dict[str, Any]) -> Tuple[DocumentStatus, List
     overall_confidence = (sum(present_confs) / len(present_confs)) if present_confs else 0.0
     overall_confidence = round(overall_confidence, 2)
 
-    missing_critical = [f for f in CRITICAL_FIELDS if not data.get(f) or is_invalid_label_value(str(data.get(f)))]
+    missing_critical = [f for f in CRITICAL_FIELDS if not data.get(f) or is_form_header_value(str(data.get(f)))]
 
     if missing_critical:
         warnings.append(f"Missing critical field(s): {', '.join(missing_critical)}")
@@ -350,11 +546,37 @@ def normalize_freight_data(
         elif key == "weight":
             norm[key] = normalize_weight(val)
         elif key in ("origin", "destination"):
-            norm[key] = normalize_location(val)
-        elif key in ("consignor", "consignee", "carrier", "commodity_description", "driver_name", "special_instructions", "quantity", "pickup_time", "delivery_time"):
+            loc = normalize_location(val)
+            if loc and looks_like_ocr_junk(loc):
+                loc = None
+            norm[key] = loc
+        elif key in ("consignor", "consignee", "carrier", "commodity_description", "driver_name"):
+            cleaned = clean_field_value(val)
+            cleaned = unglue_ocr_words(cleaned) if cleaned else None
+            if cleaned and looks_like_ocr_junk(cleaned):
+                cleaned = None
+            if key == "driver_name" and cleaned and re.search(r"hours|miles|payroll", cleaned, re.IGNORECASE):
+                cleaned = None
+            norm[key] = cleaned
+        elif key in ("pickup_time", "delivery_time"):
+            norm[key] = normalize_clock_time(val)
+        elif key == "special_instructions":
+            cleaned = clean_field_value(val)
+            if cleaned and len(re.sub(r"[^A-Za-z]", "", cleaned)) < 4:
+                cleaned = None
+            norm[key] = cleaned
+        elif key == "quantity":
             norm[key] = clean_field_value(val)
         else:
             norm[key] = clean_field_value(val)
+
+    if not norm.get("bill_date") and raw_text:
+        norm["bill_date"] = parse_boxed_month_day_year(raw_text)
+
+    left = re.sub(r"[^a-z0-9]+", "", str(norm.get("consignor") or "").lower())
+    right = re.sub(r"[^a-z0-9]+", "", str(norm.get("consignee") or "").lower())
+    if left and right and left == right:
+        norm["consignee"] = None
 
     if source_data.get("manually_corrected"):
         norm["manually_corrected"] = True
@@ -366,14 +588,23 @@ def normalize_freight_data(
     for item in items:
         if isinstance(item, dict):
             c_desc = clean_field_value(item.get("description"))
-            if c_desc:
-                clean_items.append({
+            has_load = any(item.get(k) for k in ("weight", "load_arrive", "load_depart", "unload_arrive", "unload_depart", "tag"))
+            if c_desc or has_load:
+                row = {
                     "item_no": str(item.get("item_no", len(clean_items) + 1)),
                     "description": c_desc,
                     "quantity": clean_field_value(item.get("quantity")),
                     "rate": normalize_currency(item.get("rate")),
                     "amount": normalize_currency(item.get("amount")),
-                })
+                }
+                if item.get("tag"):
+                    row["tag"] = clean_field_value(item.get("tag"))
+                if item.get("weight"):
+                    row["weight"] = normalize_weight(item.get("weight"))
+                for clock_key in ("load_arrive", "load_depart", "unload_arrive", "unload_depart"):
+                    if item.get(clock_key):
+                        row[clock_key] = normalize_clock_time(item.get(clock_key))
+                clean_items.append(row)
     norm["line_items"] = clean_items
 
     if "field_metadata" in source_data:

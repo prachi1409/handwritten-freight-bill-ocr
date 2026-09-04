@@ -10,19 +10,19 @@ logger = logging.getLogger(__name__)
 LABEL_PATTERNS = {
     "bill_number": [r"bill\s*no", r"bill\s*num", r"bill\s*#", r"bol\s*no", r"waybill", r"n\.?\s*[ºo°]?\s*de\s+factura", r"carta\s*de\s*porte"],
     "invoice_number": [r"invoice\s*num", r"invoice\s*no", r"inv\s*no", r"inv\s*#", r"n[úu]mero\s+de\s+factura", r"numero\s+de\s+factura"],
-    "bill_date": [r"date", r"dated", r"ship\s*date", r"fecha(?!/?hora)"],
+    "bill_date": [r"^date\b", r"^dated\b", r"ship\s*date", r"^fecha(?!/?hora)"],
     "consignor": [r"consignor", r"shipper", r"billed\s*from", r"remitente", r"expedidor"],
     "consignee": [r"consignee", r"receiver", r"billed\s*to", r"destinatario", r"consignatario"],
-    "origin": [r"origin", r"pickup\s*loc", r"origen"],
-    "destination": [r"destnaton", r"destination", r"delivery\s*loc", r"destino"],
+    "origin": [r"point\s*of\s*origin", r"pointoforigin", r"pickup\s*loc", r"origen", r"\borigin\b"],
+    "destination": [r"point\s*of\s*destination", r"pointofdestination", r"destnaton", r"delivery\s*loc", r"destino", r"\bdestination\b"],
     "driver_signature": [r"firma\s+del\s+conductor", r"driver\s*signature"],
     "consignee_signature": [r"firma\s+del\s+destinatario", r"consignee\s*signature", r"receiver\s*signature"],
     "vehicle_number": [r"vehicle\s*number", r"truck\s*no", r"n[úu]mero\s+de\s+veh", r"numero\s+de\s+vehiculo"],
     "weight": [r"weight", r"gross\s*wt", r"weght", r"peso"],
-    "carrier": [r"carrier\s*name\b", r"carrier\b", r"hauler", r"transporter", r"transportista"],
+    "carrier": [r"carrier\s*name\b", r"carrier\b", r"(?<!-)hauler", r"transporter", r"transportista"],
     "commodity_description": [r"commodity\s*description", r"commodity", r"comodtv", r"cargo\s*desc", r"descripci", r"mercanc"],
     "quantity": [r"quantity", r"qty", r"ouantty", r"pallets", r"cantidad"],
-    "driver_name": [r"driver\s*name", r"nombre\s+del\s+conductor"],
+    "driver_name": [r"driver\s*name", r"^driver$", r"nombre\s+del\s+conductor"],
     "pickup_time": [r"pickup\s*time", r"hora\s+de\s+recogida"],
     "delivery_time": [r"delivery\s*time", r"hora\s+de\s+entrega"],
     "freight_amount": [r"ereghtamount", r"freight\s*amount", r"freight\s*charges", r"importe\s+del\s+flete"],
@@ -39,7 +39,10 @@ LABEL_STOP_WORDS = {
     "COMMODITY", "COMODTVDESCRPTON", "COMMODITYDESCRIPTION", "QUANTITY", "OUANTTY", "DRIVER", "DRIVERNAME",
     "PICKUP", "DELIVERY", "TIME", "PICKUPIDELIVERYTIME", "FREIGHT", "EREGHTAMOUNT", "AMOUNT",
     "TOTAL", "SPECIAL", "SPECIALNSTRUCTIONS", "INSTRUCTIONS", "HANDWRITTEN", "MANIFEST", "CARGO",
-    "NAME", "DESCRIPTION", "LOCATION", "RECIEVER", "LADING", "BILL OF LADING", "FREIGHT BILL"
+    "NAME", "DESCRIPTION", "LOCATION", "RECIEVER", "LADING", "BILL OF LADING", "FREIGHT BILL",
+    "ARRIVED", "DEPART", "REMARKS", "TONNAGE", "HOURLY", "BILLTO",
+    "ADDRESS", "SUBHAUL", "TAGNUMBER", "STREETCITY", "POINTOFORIGIN", "POINTOFDESTINATION",
+    "MILES", "HOURS", "TOTALHOURS", "MHOURS", "STARTHOURS", "TOTALMILES",
 }
 
 BANNER_HEADER_WORDS = {
@@ -58,7 +61,11 @@ def is_label_text(text: str) -> bool:
         return False
     if clean in LABEL_STOP_WORDS:
         return True
-    if any(sw in clean for sw in ("CONSIGNOR", "CONSIGNEE", "BILLNO", "INVOICENUMBER", "NVOICENOMBER", "VEHICLENUMBER", "FREIGHTAMOUNT", "TOTALAMOUNT", "SPECIALINSTRUCTIONS", "DRIVERNAME")):
+    if any(sw in clean for sw in (
+        "CONSIGNOR", "CONSIGNEE", "BILLNO", "INVOICENUMBER", "NVOICENOMBER",
+        "VEHICLENUMBER", "FREIGHTAMOUNT", "TOTALAMOUNT", "SPECIALINSTRUCTIONS",
+        "DRIVERNAME", "POINTOFORIGIN", "POINTOFDESTINATION", "SUBHAUL",
+    )):
         return True
     return False
 
@@ -118,15 +125,22 @@ def extract_fields_via_spatial_layout(ocr_items: List[Dict[str, Any]]) -> Tuple[
     extracted_fields: Dict[str, Any] = {}
     field_metadata: Dict[str, Any] = {}
 
-    # Extract Carrier company name from top header area (y <= 150)
+    # Extract Carrier company name from top header area (upper ~12% of the page)
+    page_bottom = 0.0
+    if ocr_items:
+        page_bottom = max(item["bbox"][3] for item in ocr_items)
+    header_y_limit = max(180.0, page_bottom * 0.12) if page_bottom else 180.0
+
     for cand in ocr_items:
         txt = cand["text"].strip()
         if is_banner_header(txt) or is_label_text(txt):
             continue
         c_min_x, c_min_y, c_max_x, c_max_y = cand["bbox"]
-        if c_min_y <= 150 and len(txt) >= 4 and not any(kw in txt.upper() for kw in ("MANIFEST", "LADING", "BILL OF", "CONSIGNEE", "SHIPPER")):
+        if c_min_y <= header_y_limit and len(txt) >= 4 and not any(kw in txt.upper() for kw in ("MANIFEST", "LADING", "BILL OF", "CONSIGNEE", "SHIPPER", "SUB-HAUL", "SUBHAUL")):
             # Check if value is a company name like Summit Line Haul LLC or Apex Freight Carriers
-            if any(term in txt.upper() for term in ("LLC", "INC", "CORP", "CARRIERS", "HAUL", "LOGISTICS", "TRANSPORT", "FREIGHT", "EXPRESS")):
+            if "SUB-HAUL" in txt.upper() or "SUBHAUL" in re.sub(r"[^A-Z]", "", txt.upper()):
+                continue
+            if any(term in txt.upper() for term in ("LLC", "INC", "CORP", "CARRIERS", "HAUL", "LOGISTICS", "TRANSPORT", "MATERIALS", "FREIGHT", "EXPRESS")):
                 extracted_fields["carrier"] = txt
                 field_metadata["carrier"] = {
                     "value": txt,
@@ -165,6 +179,20 @@ def extract_fields_via_spatial_layout(ocr_items: List[Dict[str, Any]]) -> Tuple[
                     dist_y = c_min_y - l_max_y
                     dist_x = abs(c_min_x - l_min_x)
                     below_candidates.append((dist_y + dist_x * 0.5, cand))
+
+        if label_key == "bill_date":
+            def _looks_like_date(item: Dict[str, Any]) -> bool:
+                return bool(re.search(
+                    r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[/.-]\d{1,2}[/.-]\d{1,2}",
+                    item["text"],
+                ))
+            same_line_candidates = [c for c in same_line_candidates if _looks_like_date(c[1])]
+            below_candidates = [c for c in below_candidates if _looks_like_date(c[1])]
+        elif label_key == "weight":
+            def _looks_like_weight(item: Dict[str, Any]) -> bool:
+                return bool(re.search(r"\d", item["text"]))
+            same_line_candidates = [c for c in same_line_candidates if _looks_like_weight(c[1])]
+            below_candidates = [c for c in below_candidates if _looks_like_weight(c[1])]
 
         same_line_candidates.sort(key=lambda x: x[0])
         below_candidates.sort(key=lambda x: x[0])

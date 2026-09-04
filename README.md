@@ -39,23 +39,25 @@ UI: http://127.0.0.1:3000
 
 | `OCR_PROVIDER` | When to use |
 |---|---|
-| `local` | Default. RapidOCR reads the page; **Groq** maps English/Spanish OCR text to JSON. Regex is the fallback if Groq is off. |
+| `local` | Default. RapidOCR reads print; **Groq vision** reads the page image (handwriting). Text Groq + regex if vision is off or fails. |
 | `document_ai` | Needs project ID, processor ID, service-account JSON, **and GCP billing**. |
 
-### Spanish / English bills (Groq)
+### Groq (text + vision)
 
 1. Create a key at https://console.groq.com/keys  
 2. In `backend/.env`:
 
 ```
 ENABLE_GROQ=true
+ENABLE_GROQ_VISION=true
 GROQ_API_KEY=gsk_...
 GROQ_MODEL=openai/gpt-oss-20b
+GROQ_VISION_MODEL=qwen/qwen3.6-27b
 ```
 
-3. Restart the backend and reprocess. Logs should show `Groq + regex/spatial fallback`.
+3. Restart the backend and reprocess. Logs should show `Groq vision + regex/spatial fallback`.
 
-Groq still needs OCR text. If RapidOCR returns empty, Groq cannot fill fields. It helps Spanish/English **labels**; it is not a vision model.
+Vision sends a compressed JPEG of the page (not RapidOCR text), so handwritten names can be read. If the vision call fails, the app falls back to text Groq on OCR text, then regex.
 
 Document AI credentials path is relative to `backend/`, e.g. `./credentials/your-key.json`.
 

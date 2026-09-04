@@ -21,11 +21,15 @@ class Settings(BaseSettings):
     CONTRAST_ENHANCEMENT: float = 1.2
     DESKEW_IMAGE: bool = True
 
-    # Groq LLM: map OCR text (English/Spanish/etc.) onto freight JSON
+    # Groq LLM: map OCR text onto freight JSON; vision reads the page image (handwriting)
     ENABLE_GROQ: bool = True
+    ENABLE_GROQ_VISION: bool = True
     GROQ_API_KEY: str = ""
     GROQ_MODEL: str = "openai/gpt-oss-20b"
+    GROQ_VISION_MODEL: str = "qwen/qwen3.6-27b"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
+    GROQ_VISION_MAX_PAGES: int = 2
+    GROQ_VISION_MAX_EDGE: int = 1536
 
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     DOCUMENT_AI_LOCATION: str = "us"
