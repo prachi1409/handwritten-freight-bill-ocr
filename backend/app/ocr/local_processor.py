@@ -22,6 +22,7 @@ from app.ocr.groq_extractor import (
 from app.ocr.spatial_extractor import extract_fields_via_spatial_layout
 from app.ocr.intelligence import build_document_intelligence
 from app.ocr.layout import extract_layout_blocks
+from app.ocr.matching import apply_entity_matching
 from app.ocr.normalizer import normalize_freight_data
 from app.ocr.preprocessor import preprocess_pdf_pages_with_meta
 
@@ -201,6 +202,10 @@ class LocalOCRProcessor(BaseOCRProcessor):
                 logger.info("[OCR Flow] Field source for '%s': Groq text + regex/spatial fallback", path.name)
             else:
                 logger.info("[OCR Flow] Field source for '%s': regex/spatial", path.name)
+
+        if getattr(settings, "ENABLE_ENTITY_MATCHING", True):
+            raw_dict = apply_entity_matching(raw_dict)
+            field_source = field_source + "+match"
 
         if field_meta:
             raw_dict["field_metadata"] = field_meta

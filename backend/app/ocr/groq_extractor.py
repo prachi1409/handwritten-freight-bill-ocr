@@ -339,7 +339,8 @@ def _groq_chat_parse(
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
     }
-    token_limit = 4096 if vision else 2048
+    # Free-tier OTPM is ~1000; asking for 4096 vision tokens 429s before the call starts.
+    token_limit = 900 if vision else 1024
     text_payload = {
         "model": model,
         "temperature": 0,

@@ -29,6 +29,11 @@ async def lifespan(app: FastAPI):
             init_db()
         except Exception as e:
             logger.warning(f"Database initialization deferred (Database not reachable): {e}")
+        try:
+            from app.ocr.matching import refresh_gold_from_database
+            refresh_gold_from_database()
+        except Exception as e:
+            logger.warning("Gold gazetteer harvest deferred: %s", e)
 
     yield
 

@@ -30,6 +30,7 @@ class Settings(BaseSettings):
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_VISION_MAX_PAGES: int = 2
     GROQ_VISION_MAX_EDGE: int = 1536
+    ENABLE_ENTITY_MATCHING: bool = True
 
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     DOCUMENT_AI_LOCATION: str = "us"

@@ -8,6 +8,7 @@ from typing import Any, Dict, List
 from app.core.config import settings
 from app.ocr.base import BaseOCRProcessor, OCRResult
 from app.ocr.field_extractor import map_label_to_field, merge_structured_and_text_fields
+from app.ocr.matching import apply_entity_matching
 from app.ocr.normalizer import normalize_freight_data
 
 logger = logging.getLogger(__name__)
@@ -170,6 +171,7 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
             self._extract_structured_fields(document, raw_text)
         )
         merged = merge_structured_and_text_fields(structured, raw_text)
+        merged = apply_entity_matching(merged)
 
         confidence = 0.90
         entity_scores = [e["confidence"] for e in entities_list if e.get("confidence")]
