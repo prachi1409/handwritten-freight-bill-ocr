@@ -22,6 +22,10 @@ from app.ocr.groq_extractor import (
 from app.ocr.spatial_extractor import extract_fields_via_spatial_layout
 from app.ocr.intelligence import build_document_intelligence
 from app.ocr.layout import extract_layout_blocks
+from app.ocr.calibration import attach_field_calibration
+from app.ocr.consistency import attach_consistency_checks
+from app.ocr.candidates import generate_field_candidates
+from app.ocr.decode import decode_joint_assignment
 from app.ocr.matching import apply_entity_matching
 from app.ocr.normalizer import normalize_freight_data
 from app.ocr.preprocessor import preprocess_pdf_pages_with_meta
@@ -203,9 +207,15 @@ class LocalOCRProcessor(BaseOCRProcessor):
             else:
                 logger.info("[OCR Flow] Field source for '%s': regex/spatial", path.name)
 
+        cheap_fields = {
+            k: v for k, v in raw_dict.items()
+            if k not in ("document_type", "line_items", "field_metadata")
+        }
         if getattr(settings, "ENABLE_ENTITY_MATCHING", True):
             raw_dict = apply_entity_matching(raw_dict)
             field_source = field_source + "+match"
+        field_candidates = generate_field_candidates(cheap_fields, raw_text=raw_text)
+        joint_decode = decode_joint_assignment(field_candidates)
 
         if field_meta:
             raw_dict["field_metadata"] = field_meta
@@ -244,6 +254,8 @@ class LocalOCRProcessor(BaseOCRProcessor):
             "line_items": normalized["line_items"],
             "page_count": page_count,
             "field_source": field_source,
+            "field_candidates": field_candidates,
+            "joint_decode": joint_decode,
             "preprocessing": {
                 "dpi": dpi,
                 "deskew_enabled": bool(getattr(settings, "DESKEW_IMAGE", True)),
@@ -253,6 +265,8 @@ class LocalOCRProcessor(BaseOCRProcessor):
             "document_intelligence": intel,
             "layout": layout,
         }
+        attach_field_calibration(normalized, raw_ocr)
+        attach_consistency_checks(normalized, raw_ocr)
 
         return OCRResult(
             extracted_data=normalized,

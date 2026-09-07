@@ -609,6 +609,10 @@ def normalize_freight_data(
 
     if "field_metadata" in source_data:
         norm["field_metadata"] = source_data["field_metadata"]
+    if "field_calibration" in source_data:
+        norm["field_calibration"] = source_data["field_calibration"]
+    if "consistency_checks" in source_data:
+        norm["consistency_checks"] = source_data["consistency_checks"]
 
     field_confs = calculate_field_confidences(norm, raw_text=raw_text)
     norm["field_confidence"] = field_confs

@@ -8,6 +8,10 @@ from typing import Any, Dict, List
 from app.core.config import settings
 from app.ocr.base import BaseOCRProcessor, OCRResult
 from app.ocr.field_extractor import map_label_to_field, merge_structured_and_text_fields
+from app.ocr.calibration import attach_field_calibration
+from app.ocr.consistency import attach_consistency_checks
+from app.ocr.candidates import generate_field_candidates
+from app.ocr.decode import decode_joint_assignment
 from app.ocr.matching import apply_entity_matching
 from app.ocr.normalizer import normalize_freight_data
 
@@ -171,7 +175,10 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
             self._extract_structured_fields(document, raw_text)
         )
         merged = merge_structured_and_text_fields(structured, raw_text)
+        cheap_fields = dict(merged)
         merged = apply_entity_matching(merged)
+        field_candidates = generate_field_candidates(cheap_fields, raw_text=raw_text)
+        joint_decode = decode_joint_assignment(field_candidates)
 
         confidence = 0.90
         entity_scores = [e["confidence"] for e in entities_list if e.get("confidence")]
@@ -193,7 +200,11 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
             "form_fields": form_fields_list,
             "page_count": len(list(getattr(document, "pages", None) or [])),
             "page_confidences": page_confidences,
+            "field_candidates": field_candidates,
+            "joint_decode": joint_decode,
         }
+        attach_field_calibration(normalized, raw_ocr)
+        attach_consistency_checks(normalized, raw_ocr)
 
         return OCRResult(
             extracted_data=normalized,

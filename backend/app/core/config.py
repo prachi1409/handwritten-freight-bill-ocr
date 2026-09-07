@@ -31,6 +31,22 @@ class Settings(BaseSettings):
     GROQ_VISION_MAX_PAGES: int = 2
     GROQ_VISION_MAX_EDGE: int = 1536
     ENABLE_ENTITY_MATCHING: bool = True
+    CANDIDATE_TOP_K: int = 5
+    DECODE_BEAM_WIDTH: int = 8
+    DECODE_MAX_PER_FIELD: int = 4
+    # Point 4: isotonic calibration. Do not fit below these counts (per field).
+    CALIBRATION_MIN_SAMPLES: int = 20
+    CALIBRATION_MIN_POSITIVES: int = 3
+    CALIBRATION_MIN_NEGATIVES: int = 3
+    # Auto-post thresholds: numeric/financial tighter, handwritten names looser.
+    CONFIDENCE_THRESHOLD_DEFAULT: float = 0.80
+    CONFIDENCE_THRESHOLD_NUMERIC: float = 0.90
+    CONFIDENCE_THRESHOLD_NAME: float = 0.70
+    # Point 5: consistency/anomaly analysis (does not overwrite extracted fields).
+    CONSISTENCY_LINE_ITEM_TOLERANCE: float = 0.05
+    CONSISTENCY_PRIOR_MIN_COUNT: int = 3
+    CONSISTENCY_PRIOR_MIN_PROBABILITY: float = 0.70
+    CONSISTENCY_PRIOR_WEAK_PROBABILITY: float = 0.20
 
     GOOGLE_CLOUD_PROJECT_ID: str = ""
     DOCUMENT_AI_LOCATION: str = "us"

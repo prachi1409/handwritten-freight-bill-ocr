@@ -17,6 +17,8 @@ from app.ingestion.hasher import calculate_file_hash
 from app.ingestion.validator import validate_pdf
 from app.ingestion.convert import ALLOWED_EXTENSIONS, ensure_pdf
 from app.ocr.factory import get_ocr_processor
+from app.ocr.calibration import apply_calibration_to_status, attach_field_calibration, record_review_outcomes
+from app.ocr.consistency import apply_consistency_to_status, attach_consistency_checks
 from app.ocr.normalizer import normalize_freight_data, validate_extraction_status
 from app.schemas.document import IngestionBatchResult, DocumentUploadResponse, DocumentStatsResponse
 from app.services.storage_service import StorageService
@@ -237,6 +239,16 @@ class DocumentService:
                 extracted=normalized,
                 confidence=normalized["ocr_confidence"]
             )
+            calibration = attach_field_calibration(
+                normalized,
+                ocr_result.raw_ocr,
+                exclude_document_id=doc.id,
+            )
+            final_status, warnings = apply_calibration_to_status(final_status, warnings, calibration)
+            consistency = attach_consistency_checks(normalized, ocr_result.raw_ocr)
+            final_status, warnings = apply_consistency_to_status(final_status, warnings, consistency)
+            normalized["status"] = final_status
+            normalized["validation_warnings"] = warnings
 
             doc.extracted_data = normalized
             doc.field_confidence = normalized.get("field_confidence", {})
@@ -275,6 +287,7 @@ class DocumentService:
         previous = dict(doc.extracted_data or {})
         from app.ocr.matching import learn_from_correction
         learn_from_correction(previous, corrected_data, document_id=doc.id)
+        record_review_outcomes(previous, corrected_data, document_id=doc.id)
         corrected_data["manually_corrected"] = True
         corrected_data["reviewed"] = True
         corrected_data["reviewed_at"] = datetime.now(timezone.utc).isoformat()

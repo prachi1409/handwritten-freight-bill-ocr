@@ -1,7 +1,14 @@
 import React, { useState, useEffect } from 'react';
 import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, Cpu, MapPin, Package, DollarSign, Truck, Languages, Download } from 'lucide-react';
 import StatusBadge from './StatusBadge';
+import ReviewerFieldPanel from './ReviewerFieldPanel';
 import { fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl, getDocumentPreviewUrl, downloadExtractionReport, deleteDocument, translateDocumentFields } from '../api';
+import {
+  buildReviewReasons,
+  isFieldPresent,
+  resolveOcrMetadata,
+  splitConsistencyForDisplay,
+} from '../reviewerEvidence';
 
 const FIELD_GROUPS = [
   { id: 'identity', title: 'Bill identity', keys: ['bill_number', 'bill_date', 'invoice_number', 'carrier'] },
@@ -16,10 +23,6 @@ const SCHEMA_FIELD_KEYS = FIELD_GROUPS.flatMap((group) => group.keys);
 const WIDE_FIELDS = new Set(['commodity_description', 'special_instructions', 'driver_signature', 'consignee_signature']);
 const OPTIONAL_EMPTY_FIELDS = new Set(['fuel_surcharge', 'handling_charge']);
 const REQUIRED_FIELDS = new Set(['bill_number', 'consignor', 'consignee', 'origin', 'destination', 'total_amount']);
-
-function isFieldPresent(val) {
-  return val !== null && val !== undefined && String(val).trim() !== '' && String(val).trim() !== '—';
-}
 
 export default function DocumentDetail({ documentId, onBack }) {
   const [doc, setDoc] = useState(null);
@@ -117,6 +120,11 @@ export default function DocumentDetail({ documentId, onBack }) {
       ...prev,
       [key]: value
     }));
+  };
+
+  const handleUseCandidate = (key, value) => {
+    if (!isEditing) return;
+    handleFieldChange(key, value);
   };
 
   const handleLineItemChange = (index, field, value) => {
@@ -316,11 +324,19 @@ export default function DocumentDetail({ documentId, onBack }) {
 
   const extractedData = doc.extracted_data || {};
   const fieldConfidenceMap = doc.field_confidence || extractedData.field_confidence || {};
-  const rawOcr = doc.ocr_metadata || doc.raw_ocr || {};
+  const rawOcr = resolveOcrMetadata(doc);
   const lineItems = Array.isArray(extractedData.line_items) ? extractedData.line_items : [];
   const hasLoadRows = lineItems.some((item) => item.load_arrive || item.load_depart || item.tag || (item.weight && (item.load_arrive || item.load_depart)));
   const rawText = doc.raw_ocr_text || extractedData.raw_text || rawOcr.raw_text || '';
   const validationWarnings = doc.validation_warnings || rawOcr.validation_warnings || [];
+  const consistencySplit = splitConsistencyForDisplay(rawOcr.consistency_checks, validationWarnings);
+  const reviewReasons = buildReviewReasons({
+    status: doc.status,
+    validationWarnings,
+    calibration: rawOcr.field_calibration,
+    consistency: rawOcr.consistency_checks,
+    extracted: extractedData,
+  });
 
   const schemaFieldKeys = SCHEMA_FIELD_KEYS;
 
@@ -421,21 +437,70 @@ export default function DocumentDetail({ documentId, onBack }) {
         </div>
       )}
 
+      {statusUpper !== 'REVIEW' && (consistencySplit.warnings.length > 0 || consistencySplit.errors.length > 0) && (
+        <div className="alert alert-warning" data-testid="consistency-only-banner">
+          <div style={{ fontWeight: 700, marginBottom: '0.35rem' }}>Consistency notes</div>
+          <ul className="reviewer-reason-list">
+            {[...consistencySplit.errors, ...consistencySplit.warnings].map((row, idx) => (
+              <li key={`note-${idx}`}>{(row.severity || 'warning').toUpperCase()} {row.message}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+
       {statusUpper === 'REVIEW' && (
-        <div className="alert alert-warning">
+        <div className="alert alert-warning" data-testid="review-required-banner">
           <div style={{ display: 'flex', alignItems: 'flex-start', gap: '0.75rem' }}>
             <AlertCircle size={20} color="#ea580c" style={{ marginTop: '0.125rem', flexShrink: 0 }} />
-            <div>
-              <div style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#c2410c' }}>Needs Manual Review</div>
-              <div style={{ fontSize: '0.875rem', marginTop: '0.25rem', color: '#c2410c' }}>
-                {doc.error_message || (validationWarnings.length > 0 ? validationWarnings.join('; ') : 'Important required fields are missing or extraction confidence is below threshold.')}
-              </div>
-              {validationWarnings.length > 0 && (
-                <ul style={{ marginTop: '0.5rem', paddingLeft: '1.25rem', fontSize: '0.8125rem', color: '#c2410c' }}>
-                  {validationWarnings.map((w, idx) => (
-                    <li key={idx}>{w}</li>
+            <div style={{ width: '100%' }}>
+              <div style={{ fontWeight: 700, fontSize: '0.9375rem', color: '#c2410c' }}>Review required</div>
+              {reviewReasons.length > 0 ? (
+                <ul className="reviewer-reason-list">
+                  {reviewReasons.map((item) => (
+                    <li key={item.key}>{item.text}</li>
                   ))}
                 </ul>
+              ) : (
+                <div style={{ fontSize: '0.875rem', marginTop: '0.25rem', color: '#c2410c' }}>
+                  {doc.error_message || 'This document was flagged for review by the existing validation rules.'}
+                </div>
+              )}
+              {validationWarnings.length > 0 && (
+                <div className="reviewer-banner-block" data-testid="validation-issues">
+                  <div className="reviewer-meta-label">Validation / blocking issues</div>
+                  <ul>
+                    {validationWarnings.map((w, idx) => (
+                      <li key={`val-${idx}`}>{w}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {consistencySplit.warnings.length > 0 && (
+                <div className="reviewer-banner-block" data-testid="consistency-warnings">
+                  <div className="reviewer-meta-label">Consistency warnings</div>
+                  <ul>
+                    {consistencySplit.warnings.map((row, idx) => (
+                      <li key={`con-${idx}`}>
+                        WARNING {row.message}
+                        {Array.isArray(row.fields_involved) && row.fields_involved.length
+                          ? ` (${row.fields_involved.join(', ')})`
+                          : ''}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {consistencySplit.errors.length > 0 && (
+                <div className="reviewer-banner-block" data-testid="consistency-errors">
+                  <div className="reviewer-meta-label">Consistency errors</div>
+                  <ul>
+                    {consistencySplit.errors.map((row, idx) => (
+                      <li key={`cerr-${idx}`}>
+                        ERROR {row.message}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
               )}
             </div>
           </div>
@@ -652,6 +717,14 @@ export default function DocumentDetail({ documentId, onBack }) {
                               {showingTranslation && (
                                 <div className="kv-original-text">{val}</div>
                               )}
+                              <ReviewerFieldPanel
+                                field={key}
+                                currentValue={val}
+                                extracted={extractedData}
+                                meta={rawOcr}
+                                heuristicConfidence={confScore}
+                                isEditing={false}
+                              />
                             </div>
                           );
                         })}
@@ -797,6 +870,15 @@ export default function DocumentDetail({ documentId, onBack }) {
                               value={editFormData[key] || ''}
                               onChange={(e) => handleFieldChange(key, e.target.value)}
                               placeholder={`Enter ${meta.label}`}
+                            />
+                            <ReviewerFieldPanel
+                              field={key}
+                              currentValue={editFormData[key]}
+                              extracted={extractedData}
+                              meta={rawOcr}
+                              heuristicConfidence={fieldConfidenceMap[key]}
+                              isEditing={true}
+                              onUseCandidate={(value) => handleUseCandidate(key, value)}
                             />
                           </div>
                         );
