@@ -546,7 +546,7 @@ def refresh_gold_from_database() -> None:
         return
     db = SessionLocal()
     try:
-        rows = db.query(Document.extracted_data, Document.manual_corrections).filter(
+        rows = db.query(Document.id, Document.extracted_data, Document.manual_corrections).filter(
             Document.extracted_data.isnot(None)
         ).all()
     except Exception as err:
@@ -556,11 +556,14 @@ def refresh_gold_from_database() -> None:
         db.close()
 
     memory = load_matching_memory()
-    gold = [data for data, corrected in rows if corrected and isinstance(data, dict)]
-    other = [data for data, corrected in rows if (not corrected) and isinstance(data, dict)]
+    gold = [data for _id, data, corrected in rows if corrected and isinstance(data, dict)]
+    gold_ids = [doc_id for doc_id, data, corrected in rows if corrected and isinstance(data, dict)]
+    other = [data for _id, data, corrected in rows if (not corrected) and isinstance(data, dict)]
     merge_gold_records(gold, trusted=True, memory=memory)
     merge_gold_records(other, trusted=False, memory=memory)
     save_matching_memory(memory)
+    from app.ocr.priors import rebuild_priors_from_records
+    rebuild_priors_from_records(gold, document_ids=gold_ids, persist=True)
     logger.info(
         "Gold harvest: %s reviewed, %s other documents; %s consignees, %s streets",
         len(gold),
@@ -578,8 +581,12 @@ def learn_gold_values(fields: Optional[Dict[str, Any]]) -> None:
     save_matching_memory(memory)
 
 
-def learn_from_correction(before: Optional[Dict[str, Any]], after: Optional[Dict[str, Any]]) -> None:
-    """When Review changes a name, keep the gold string and an OCR→gold alias."""
+def learn_from_correction(
+    before: Optional[Dict[str, Any]],
+    after: Optional[Dict[str, Any]],
+    document_id: Optional[Any] = None,
+) -> None:
+    """When Review changes a name, keep the gold string, alias, and route priors."""
     learn_gold_values(after)
     if getattr(settings, "TESTING", False):
         return
@@ -601,3 +608,5 @@ def learn_from_correction(before: Optional[Dict[str, Any]], after: Optional[Dict
                 changed = True
     if changed:
         save_matching_memory(memory)
+    from app.ocr.priors import observe_reviewed_ticket
+    observe_reviewed_ticket(nxt, document_id=document_id)

@@ -274,7 +274,7 @@ class DocumentService:
         raw_text = doc.raw_ocr_text or ""
         previous = dict(doc.extracted_data or {})
         from app.ocr.matching import learn_from_correction
-        learn_from_correction(previous, corrected_data)
+        learn_from_correction(previous, corrected_data, document_id=doc.id)
         corrected_data["manually_corrected"] = True
         corrected_data["reviewed"] = True
         corrected_data["reviewed_at"] = datetime.now(timezone.utc).isoformat()
