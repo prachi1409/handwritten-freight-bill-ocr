@@ -321,3 +321,97 @@ def decode_joint_assignment(
     payload["selected"] = {field: slot.get("value") for field, slot in best.items()}
     payload["searched"] = searched
     return payload
+
+
+def _apply_selected_enabled() -> bool:
+    return bool(getattr(settings, "DECODE_APPLY_SELECTED", True))
+
+
+def _ocr_guard_blocks(field: str, selected_value: Any, field_candidates: Optional[Dict[str, List[Dict[str, Any]]]]) -> bool:
+    from app.ocr.matching import _is_harvestable_name
+
+    pool = (field_candidates or {}).get(field) or []
+    if not pool:
+        return False
+    best = max(pool, key=lambda row: float(row.get("fuzzy_score") or 0.0))
+    if not _is_harvestable_name(field, str(best.get("value") or "")):
+        return False
+    best_fuzzy = float(best.get("fuzzy_score") or 0.0)
+    selected_fuzzy = 0.0
+    needle = _norm(selected_value)
+    for row in pool:
+        if _norm(row.get("value")) == needle:
+            selected_fuzzy = float(row.get("fuzzy_score") or 0.0)
+            break
+    w = JOINT_WEIGHTS
+    return bool(best_fuzzy >= w["strong_ocr_fuzzy"] and best_fuzzy - selected_fuzzy > w["ocr_guard_margin"])
+
+
+def apply_joint_selection(
+    extracted: Optional[Dict[str, Any]],
+    joint_payload: Optional[Dict[str, Any]],
+    field_candidates: Optional[Dict[str, List[Dict[str, Any]]]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Write joint-selected entity fields onto extraction. Never touches money/weight/ids."""
+    out = dict(extracted or {})
+    selected = (joint_payload or {}).get("selected") if isinstance(joint_payload, dict) else None
+    report: Dict[str, Any] = {"enabled": _apply_selected_enabled(), "fields": {}}
+    if not report["enabled"] or not isinstance(selected, dict):
+        return out, report
+
+    from app.ocr.matching import _is_harvestable_name
+
+    for field in DECODE_FIELDS:
+        value = selected.get(field)
+        if not value or not _is_harvestable_name(field, str(value)):
+            continue
+        previous = out.get(field)
+        if _ocr_guard_blocks(field, value, field_candidates):
+            report["fields"][field] = {
+                "status": "ocr_guard",
+                "previous": previous,
+                "selected": value,
+            }
+            continue
+        if _norm(previous) == _norm(value) and previous:
+            report["fields"][field] = {"status": "unchanged", "value": previous}
+            continue
+        out[field] = value
+        report["fields"][field] = {
+            "status": "applied",
+            "previous": previous,
+            "value": value,
+        }
+    return out, report
+
+
+def resolve_entity_assignment(
+    extracted: Optional[Dict[str, Any]],
+    *,
+    cheap_fields: Optional[Dict[str, Any]] = None,
+    raw_text: str = "",
+    priors: Optional[Dict[str, Any]] = None,
+    gazetteer: Optional[Dict[str, Any]] = None,
+    memory: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, List[Dict[str, Any]]], Dict[str, Any]]:
+    """Candidates → joint decode → apply selected entities → peaked 3-of-4 fill."""
+    from app.ocr.candidates import generate_field_candidates
+    from app.ocr.priors import fill_peaked_party_field
+
+    data = dict(extracted or {})
+    cheap = dict(cheap_fields) if cheap_fields is not None else data
+    field_candidates = generate_field_candidates(
+        cheap,
+        context_fields=data,
+        raw_text=raw_text,
+        priors=priors,
+        gazetteer=gazetteer,
+        memory=memory,
+    )
+    joint = decode_joint_assignment(field_candidates, priors=priors)
+    data, applied = apply_joint_selection(data, joint, field_candidates)
+    data, fill = fill_peaked_party_field(data, priors=priors)
+    joint["applied"] = applied
+    joint["applied_to_extraction"] = True
+    joint["peaked_fill"] = fill
+    return data, field_candidates, joint

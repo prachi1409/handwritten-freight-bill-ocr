@@ -277,6 +277,98 @@ def _can_fit(examples: Sequence[Dict[str, Any]]) -> bool:
     return positives >= _min_positives() and negatives >= _min_negatives()
 
 
+CALIBRATION_PREDICTION_KEY = "calibration_prediction"
+
+
+def _is_reviewer_gold(extracted: Optional[Dict[str, Any]]) -> bool:
+    """True when extracted_data is a reviewer-submitted correction, not a pipeline prediction."""
+    if not isinstance(extracted, dict):
+        return False
+    return bool(extracted.get("reviewed") or extracted.get("manually_corrected"))
+
+
+def snapshot_extraction_prediction(extracted: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    """Minimal pipeline-prediction snapshot for later re-review labels. No gold, images, or text."""
+    data = extracted if isinstance(extracted, dict) else {}
+    confs = data.get("field_confidence") if isinstance(data.get("field_confidence"), dict) else {}
+    fields: Dict[str, Any] = {}
+    confidence: Dict[str, Any] = {}
+    for field in ALL_SCHEMA_FIELDS:
+        if field in data:
+            fields[field] = data.get(field)
+        if confs.get(field) is not None:
+            try:
+                confidence[field] = round(float(confs[field]), 4)
+            except (TypeError, ValueError):
+                continue
+    return {"fields": fields, "field_confidence": confidence}
+
+
+def _before_from_snapshot(snapshot: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    if not isinstance(snapshot, dict):
+        return None
+    fields = snapshot.get("fields")
+    if not isinstance(fields, dict):
+        return None
+    before = dict(fields)
+    confs = snapshot.get("field_confidence")
+    if isinstance(confs, dict):
+        before["field_confidence"] = confs
+    return before
+
+
+def resolve_calibration_prediction(
+    extracted: Optional[Dict[str, Any]],
+    ocr_metadata: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
+    """Pipeline prediction to compare with gold. None if only reviewer gold is available."""
+    snapshot = None
+    if isinstance(ocr_metadata, dict):
+        snapshot = ocr_metadata.get(CALIBRATION_PREDICTION_KEY)
+    restored = _before_from_snapshot(snapshot)
+    if restored is not None:
+        return restored
+    if _is_reviewer_gold(extracted):
+        return None
+    if isinstance(extracted, dict):
+        return extracted
+    return None
+
+
+def ensure_calibration_prediction(
+    ocr_metadata: Optional[Dict[str, Any]],
+    extracted: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    """Store the original pipeline prediction once. Never replace it with gold."""
+    meta = dict(ocr_metadata) if isinstance(ocr_metadata, dict) else {}
+    if _before_from_snapshot(meta.get(CALIBRATION_PREDICTION_KEY)) is not None:
+        return meta
+    if _is_reviewer_gold(extracted) or not isinstance(extracted, dict):
+        return meta
+    meta[CALIBRATION_PREDICTION_KEY] = snapshot_extraction_prediction(extracted)
+    return meta
+
+
+def record_review_calibration(
+    extracted: Optional[Dict[str, Any]],
+    corrected: Optional[Dict[str, Any]],
+    *,
+    document_id: Optional[Any] = None,
+    ocr_metadata: Optional[Dict[str, Any]] = None,
+    store: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+    """Capture original prediction if needed, then label original vs reviewer gold."""
+    meta = ensure_calibration_prediction(ocr_metadata, extracted)
+    before = resolve_calibration_prediction(extracted, meta)
+    if before is None:
+        if store is not None:
+            return meta, store
+        if getattr(settings, "TESTING", False):
+            return meta, empty_calibration_store()
+        return meta, load_calibration_store()
+    return meta, record_review_outcomes(before, corrected, document_id=document_id, store=store)
+
+
 def record_review_outcomes(
     before: Optional[Dict[str, Any]],
     after: Optional[Dict[str, Any]],
@@ -288,6 +380,8 @@ def record_review_outcomes(
     persist = store is None
     if persist and getattr(settings, "TESTING", False):
         return empty_calibration_store()
+    if before is None:
+        return store if store is not None else load_calibration_store()
     payload = store if store is not None else load_calibration_store()
     predicted = before if isinstance(before, dict) else {}
     gold = after if isinstance(after, dict) else {}

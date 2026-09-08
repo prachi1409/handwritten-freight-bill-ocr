@@ -1,0 +1,25 @@
+{
+  "bills": [
+    {
+      "id": "example_bill_001",
+      "path": "input_doc_location/sample_bill.pdf",
+      "gold": {
+        "invoice_number": null,
+        "bill_number": null,
+        "carrier": null,
+        "consignor": null,
+        "consignee": null,
+        "driver_name": null,
+        "origin": null,
+        "destination": null,
+        "weight": null,
+        "quantity": null,
+        "rate": null,
+        "freight_amount": null,
+        "fuel_surcharge": null,
+        "handling_charge": null,
+        "total_amount": null
+      }
+    }
+  ]
+}

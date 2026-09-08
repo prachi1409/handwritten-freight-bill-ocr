@@ -129,6 +129,24 @@ def _has_prior_context(field: str, raw_dict: Dict[str, Any]) -> bool:
     return False
 
 
+def _inject_priors_enabled() -> bool:
+    return bool(getattr(settings, "PRIOR_INJECT_WHEN_OCR_WEAK", True))
+
+
+def _inject_min_count() -> int:
+    try:
+        return max(1, int(getattr(settings, "PRIOR_INJECT_MIN_COUNT", 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
+def _inject_max() -> int:
+    try:
+        return max(1, int(getattr(settings, "PRIOR_INJECT_MAX", 5) or 5))
+    except (TypeError, ValueError):
+        return 5
+
+
 def _new_slot(value: str) -> Dict[str, Any]:
     return {
         "value": value,
@@ -150,6 +168,7 @@ def _add_source(slot: Dict[str, Any], source: str) -> None:
 def generate_field_candidates(
     raw_dict: Optional[Dict[str, Any]],
     *,
+    context_fields: Optional[Dict[str, Any]] = None,
     priors: Optional[Dict[str, Any]] = None,
     gazetteer: Optional[Dict[str, List[str]]] = None,
     memory: Optional[Dict[str, Any]] = None,
@@ -157,8 +176,15 @@ def generate_field_candidates(
     top_k: Optional[int] = None,
     min_fuzzy: float = CANDIDATE_MIN_FUZZY,
 ) -> Dict[str, List[Dict[str, Any]]]:
-    """Return top-K candidates per entity field. Does not change 1-best matching."""
+    """Return top-K candidates per entity field. Does not change 1-best matching.
+
+    When OCR for a field is empty/junk, route-conditioned priors may be injected
+    as candidates (never global unigrams). ``context_fields`` should be the
+    matched 1-best values used only for prior lookup.
+    """
     data = dict(raw_dict or {})
+    context = dict(context_fields) if isinstance(context_fields, dict) else data
+    working = dict(context)
     mem = memory if memory is not None else load_matching_memory()
     gaz = gazetteer if gazetteer is not None else mem.get("names") or {}
     prior_store = priors if priors is not None else load_priors()
@@ -206,8 +232,18 @@ def generate_field_candidates(
                     if fuzzy >= min_fuzzy or not query:
                         take(name, max(fuzzy, 0.80 if not query else fuzzy), "ocr_text")
 
-        prior_map = _prior_index(field, data, prior_store)
-        context = _has_prior_context(field, data) and bool(prior_map)
+        prior_map = _prior_index(field, working, prior_store)
+        route_context = _has_prior_context(field, working) and bool(prior_map)
+        if not query and route_context and _inject_priors_enabled():
+            injected = 0
+            min_count = _inject_min_count()
+            for label, count, _prob in _prior_rows_for_field(field, working, prior_store):
+                if int(count) < min_count:
+                    continue
+                take(label, 0.0, "prior")
+                injected += 1
+                if injected >= min(limit, _inject_max()):
+                    break
 
         ranked: List[Dict[str, Any]] = []
         for slot in pooled.values():
@@ -218,7 +254,7 @@ def generate_field_candidates(
                 slot["prior_probability"] = round(prob, 4)
                 _add_source(slot, "prior")
             fuzzy = float(slot["fuzzy_score"] or 0.0)
-            if context and slot["prior_count"] == 0 and fuzzy < 0.86 and "ocr" not in slot["sources"] and "alias" not in slot["sources"]:
+            if route_context and slot["prior_count"] == 0 and fuzzy < 0.86 and "ocr" not in slot["sources"] and "alias" not in slot["sources"]:
                 continue
             slot["final_candidate_score"] = round(fuzzy + PRIOR_RANK_BONUS * float(slot["prior_probability"] or 0.0), 4)
             slot["score"] = slot["final_candidate_score"]
@@ -234,5 +270,7 @@ def generate_field_candidates(
             )
         )
         out[field] = ranked[:limit]
+        if not _usable_query(field, working.get(field)) and out[field]:
+            working[field] = out[field][0]["value"]
 
     return out

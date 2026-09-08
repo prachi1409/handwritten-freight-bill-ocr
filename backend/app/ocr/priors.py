@@ -415,3 +415,83 @@ def likely_entities(
             likely["carrier"] = full
 
     return likely
+
+
+PARTY_FILL_FIELDS = ("consignor", "consignee", "carrier", "driver_name")
+
+
+def _fill_min_count() -> int:
+    try:
+        return max(1, int(getattr(settings, "PRIOR_FILL_MIN_COUNT", 3) or 3))
+    except (TypeError, ValueError):
+        return 3
+
+
+def _fill_min_prob() -> float:
+    try:
+        return min(1.0, max(0.0, float(getattr(settings, "PRIOR_FILL_MIN_PROBABILITY", 0.80) or 0.80)))
+    except (TypeError, ValueError):
+        return 0.80
+
+
+def _peaked_lookup(
+    field: str,
+    data: Dict[str, Any],
+    priors: Dict[str, Any],
+) -> List[Tuple[str, int, float]]:
+    consignor = data.get("consignor")
+    consignee = data.get("consignee")
+    carrier = data.get("carrier")
+    if field == "driver_name":
+        if consignor and carrier:
+            hits = drivers_for(consignor, carrier, priors=priors)
+            if hits:
+                return hits
+        if carrier:
+            return associated_pair("carrier→driver", carrier, priors=priors)
+        return []
+    if field == "carrier":
+        return carriers_for(consignor, consignee, priors=priors)
+    if field == "consignee" and consignor:
+        return consignees_for(consignor, priors=priors)
+    return []
+
+
+def fill_peaked_party_field(
+    extracted: Optional[Dict[str, Any]],
+    *,
+    priors: Optional[Dict[str, Any]] = None,
+) -> Tuple[Dict[str, Any], Optional[Dict[str, Any]]]:
+    """If 3 of 4 party fields are resolved, fill the 4th from a peaked route prior.
+
+    Does not fill consignor (no reverse lookup). Does not overwrite a present value.
+    """
+    out = dict(extracted or {})
+    store = priors if priors is not None else load_priors()
+    present = [field for field in PARTY_FILL_FIELDS if _clean_field(field, out.get(field))]
+    missing = [field for field in PARTY_FILL_FIELDS if field not in present]
+    if len(present) < 3 or len(missing) != 1:
+        return out, None
+    target = missing[0]
+    if target == "consignor":
+        return out, None
+    ranked = _peaked_lookup(target, out, store)
+    if not ranked:
+        return out, None
+    label, count, prob = ranked[0]
+    min_count = _fill_min_count()
+    min_prob = _fill_min_prob()
+    if int(count) < min_count or float(prob) < min_prob:
+        return out, None
+    if not _clean_field(target, label):
+        return out, None
+    out[target] = label
+    report = {
+        "field": target,
+        "value": label,
+        "count": int(count),
+        "probability": round(float(prob), 4),
+        "source": "peaked_route_prior",
+        "given": present,
+    }
+    return out, report

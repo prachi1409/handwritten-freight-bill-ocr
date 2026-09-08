@@ -169,6 +169,63 @@ def test_no_candidate_when_evidence_absent():
     assert empty == []
 
 
+def test_weak_ocr_injects_route_conditioned_priors():
+    priors = empty_priors()
+    observe_reviewed_ticket(
+        {
+            "carrier": "CALIFORNIA MATERIALS, INC.",
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+            "driver_name": "Gerald Valentin",
+        },
+        document_id="gold-1",
+        priors=priors,
+    )
+    rows = generate_field_candidates(
+        {
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+            "carrier": None,
+            "driver_name": None,
+        },
+        gazetteer=GAZ,
+        memory=_memory(),
+        priors=priors,
+        raw_text="",
+    )
+    assert "CALIFORNIA MATERIALS, INC." in _values(rows["carrier"])
+    carrier = next(row for row in rows["carrier"] if row["value"] == "CALIFORNIA MATERIALS, INC.")
+    assert "prior" in carrier["sources"]
+    assert "Gerald Valentin" in _values(rows["driver_name"])
+    assert "Ghost Hauling LLC" not in _values(rows["carrier"])
+
+
+def test_matched_context_fields_drive_prior_lookup():
+    priors = empty_priors()
+    observe_reviewed_ticket(
+        {
+            "carrier": "CALIFORNIA MATERIALS, INC.",
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+            "driver_name": "Gerald Valentin",
+        },
+        document_id="gold-1",
+        priors=priors,
+    )
+    rows = generate_field_candidates(
+        {"carrier": None, "driver_name": "@@@"},
+        context_fields={
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+            "carrier": "CALIFORNIA MATERIALS, INC.",
+        },
+        gazetteer=GAZ,
+        memory=_memory(),
+        priors=priors,
+    )["driver_name"]
+    assert "Gerald Valentin" in _values(rows)
+
+
 def test_one_best_gazetteer_matching_unchanged():
     out = apply_entity_matching({"consignor": "CleanPlanet", "driver_name": "207855"})
     assert out["consignor"] == "Clean Planet"

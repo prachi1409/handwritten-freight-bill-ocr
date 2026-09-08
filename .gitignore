@@ -14,6 +14,11 @@ backend/credentials/
 !package-lock.json
 !tsconfig.json
 !*_ground_truth.json
+!backend/eval_datasets/*.json
+
+# Evaluation harness outputs
+eval_results/
+backend/eval_results/
 
 # Python
 __pycache__/

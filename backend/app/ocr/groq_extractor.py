@@ -440,7 +440,11 @@ def extract_fields_with_groq(raw_text: str) -> Optional[Dict[str, Any]]:
     return fields
 
 
-def extract_fields_with_groq_vision(page_images: Optional[Sequence[Any]]) -> Optional[Dict[str, Any]]:
+def extract_fields_with_groq_vision(
+    page_images: Optional[Sequence[Any]],
+    focus_fields: Optional[Sequence[str]] = None,
+    field_context: Optional[str] = None,
+) -> Optional[Dict[str, Any]]:
     """Call a Groq vision model on page images so handwritten values can be read."""
     if getattr(settings, "TESTING", False):
         return None
@@ -457,14 +461,21 @@ def extract_fields_with_groq_vision(page_images: Optional[Sequence[Any]]) -> Opt
         logger.info("Groq vision skipped: no page images")
         return None
 
+    default_text = (
+        "Extract freight-bill fields from this scanned page. "
+        "Read handwritten names, places, ticket numbers, weights, and times. "
+        "Return a single JSON object only. No markdown, no explanation."
+    )
+    user_text = (field_context or "").strip() or default_text
+    if focus_fields and not (field_context or "").strip():
+        names = ", ".join(str(name) for name in focus_fields if name)
+        if names:
+            user_text = f"{default_text} Focus especially on: {names}."
+
     user_content: List[Dict[str, Any]] = [
         {
             "type": "text",
-            "text": (
-                "Extract freight-bill fields from this scanned page. "
-                "Read handwritten names, places, ticket numbers, weights, and times. "
-                "Return a single JSON object only. No markdown, no explanation."
-            ),
+            "text": user_text,
         }
     ]
     for url in data_urls:

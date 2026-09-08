@@ -10,8 +10,7 @@ from app.ocr.base import BaseOCRProcessor, OCRResult
 from app.ocr.field_extractor import map_label_to_field, merge_structured_and_text_fields
 from app.ocr.calibration import attach_field_calibration
 from app.ocr.consistency import attach_consistency_checks
-from app.ocr.candidates import generate_field_candidates
-from app.ocr.decode import decode_joint_assignment
+from app.ocr.decode import resolve_entity_assignment
 from app.ocr.matching import apply_entity_matching
 from app.ocr.normalizer import normalize_freight_data
 
@@ -118,6 +117,7 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
     def _attach_pipeline_meta(result: OCRResult, path: Path) -> None:
         from app.ocr.intelligence import build_document_intelligence
         from app.ocr.layout import extract_layout_blocks
+        from app.ocr.layout_classifier import classify_layout_safe
 
         intel = build_document_intelligence(
             result.raw_text,
@@ -132,6 +132,12 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
         except Exception as e:
             logger.debug("Layout reconstruction skipped: %s", e)
             result.raw_ocr["layout"] = {"block_count": 0, "blocks": []}
+        result.raw_ocr["layout_classification"] = classify_layout_safe(
+            result.raw_text,
+            page_count=int((result.raw_ocr or {}).get("page_count") or 0),
+            layout=result.raw_ocr.get("layout"),
+            text_source="google-cloud-documentai",
+        )
 
     def _call_document_ai(self, path: Path) -> Any:
         """Invoke the Document AI process_document API and return the Document proto."""
@@ -177,8 +183,12 @@ class GoogleDocumentAIProcessor(BaseOCRProcessor):
         merged = merge_structured_and_text_fields(structured, raw_text)
         cheap_fields = dict(merged)
         merged = apply_entity_matching(merged)
-        field_candidates = generate_field_candidates(cheap_fields, raw_text=raw_text)
-        joint_decode = decode_joint_assignment(field_candidates)
+        merged, field_candidates, joint_decode = resolve_entity_assignment(
+            merged,
+            cheap_fields=cheap_fields,
+            raw_text=raw_text,
+        )
+        merged = apply_entity_matching(merged)
 
         confidence = 0.90
         entity_scores = [e["confidence"] for e in entities_list if e.get("confidence")]

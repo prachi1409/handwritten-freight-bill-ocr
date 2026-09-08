@@ -30,10 +30,21 @@ class Settings(BaseSettings):
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_VISION_MAX_PAGES: int = 2
     GROQ_VISION_MAX_EDGE: int = 1536
+    # Point 7: Groq Vision is a field-aware rescue, not the default extractor.
+    GROQ_VISION_FALLBACK_ENABLED: bool = True
+    GROQ_VISION_FALLBACK_MAX_FIELDS: int = 6
+    GROQ_VISION_FALLBACK_MIN_CONFIDENCE: float = 0.80
+    GROQ_VISION_AMBIGUITY_MAX_GAP: float = 0.08
     ENABLE_ENTITY_MATCHING: bool = True
     CANDIDATE_TOP_K: int = 5
     DECODE_BEAM_WIDTH: int = 8
     DECODE_MAX_PER_FIELD: int = 4
+    DECODE_APPLY_SELECTED: bool = True
+    PRIOR_INJECT_WHEN_OCR_WEAK: bool = True
+    PRIOR_INJECT_MIN_COUNT: int = 1
+    PRIOR_INJECT_MAX: int = 5
+    PRIOR_FILL_MIN_COUNT: int = 3
+    PRIOR_FILL_MIN_PROBABILITY: float = 0.80
     # Point 4: isotonic calibration. Do not fit below these counts (per field).
     CALIBRATION_MIN_SAMPLES: int = 20
     CALIBRATION_MIN_POSITIVES: int = 3

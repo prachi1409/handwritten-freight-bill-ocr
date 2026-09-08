@@ -13,19 +13,18 @@ import pymupdf as fitz
 from app.core.config import settings
 from app.ocr.base import BaseOCRProcessor, OCRResult
 from app.ocr.field_extractor import FREIGHT_FIELD_KEYS, extract_freight_fields_from_text, pick_extracted_value
-from app.ocr.groq_extractor import (
-    apply_llm_fields,
-    apply_vision_fields,
-    extract_fields_with_groq,
-    extract_fields_with_groq_vision,
-)
 from app.ocr.spatial_extractor import extract_fields_via_spatial_layout
+from app.ocr.vision_fallback import (
+    apply_accepted_fallback,
+    apply_fallback_metadata,
+    run_vision_fallback,
+)
 from app.ocr.intelligence import build_document_intelligence
 from app.ocr.layout import extract_layout_blocks
+from app.ocr.layout_classifier import classify_layout_safe
 from app.ocr.calibration import attach_field_calibration
 from app.ocr.consistency import attach_consistency_checks
-from app.ocr.candidates import generate_field_candidates
-from app.ocr.decode import decode_joint_assignment
+from app.ocr.decode import resolve_entity_assignment
 from app.ocr.matching import apply_entity_matching
 from app.ocr.normalizer import normalize_freight_data
 from app.ocr.preprocessor import preprocess_pdf_pages_with_meta
@@ -177,6 +176,21 @@ class LocalOCRProcessor(BaseOCRProcessor):
             snippet = raw_text.strip()[:300].replace("\n", " ")
             logger.info(f"[OCR Diagnostic] Content Preview: '{snippet}'")
 
+        layout = {"block_count": 0, "blocks": []}
+        try:
+            layout = extract_layout_blocks(path)
+        except Exception as e:
+            logger.debug(f"Layout reconstruction skipped for '{path.name}': {e}")
+
+        layout_classification = classify_layout_safe(
+            raw_text,
+            page_count=page_count,
+            page_images=page_images,
+            layout=layout,
+            spatial_items=spatial_items,
+            text_source=text_source,
+        )
+
         # 3. Spatial & Text Field Extraction
         raw_dict = {}
         field_meta = {}
@@ -192,20 +206,8 @@ class LocalOCRProcessor(BaseOCRProcessor):
         else:
             raw_dict = extract_freight_fields_from_text(raw_text)
 
-        vision_dict = extract_fields_with_groq_vision(page_images)
         field_source = "regex/spatial"
-        if vision_dict:
-            raw_dict = apply_vision_fields(raw_dict, vision_dict)
-            field_source = "groq-vision+regex"
-            logger.info("[OCR Flow] Field source for '%s': Groq vision + regex/spatial fallback", path.name)
-        else:
-            llm_dict = extract_fields_with_groq(raw_text)
-            if llm_dict:
-                raw_dict = apply_llm_fields(raw_dict, llm_dict)
-                field_source = "groq+regex"
-                logger.info("[OCR Flow] Field source for '%s': Groq text + regex/spatial fallback", path.name)
-            else:
-                logger.info("[OCR Flow] Field source for '%s': regex/spatial", path.name)
+        logger.info("[OCR Flow] Field source for '%s': regex/spatial (Groq Vision reserved for later fallback)", path.name)
 
         cheap_fields = {
             k: v for k, v in raw_dict.items()
@@ -214,8 +216,18 @@ class LocalOCRProcessor(BaseOCRProcessor):
         if getattr(settings, "ENABLE_ENTITY_MATCHING", True):
             raw_dict = apply_entity_matching(raw_dict)
             field_source = field_source + "+match"
-        field_candidates = generate_field_candidates(cheap_fields, raw_text=raw_text)
-        joint_decode = decode_joint_assignment(field_candidates)
+        raw_dict, field_candidates, joint_decode = resolve_entity_assignment(
+            raw_dict,
+            cheap_fields=cheap_fields,
+            raw_text=raw_text,
+        )
+        if getattr(settings, "ENABLE_ENTITY_MATCHING", True):
+            raw_dict = apply_entity_matching(raw_dict)
+        applied_fields = ((joint_decode.get("applied") or {}).get("fields") or {})
+        if any(row.get("status") == "applied" for row in applied_fields.values() if isinstance(row, dict)):
+            field_source = field_source + "+joint"
+        if joint_decode.get("peaked_fill"):
+            field_source = field_source + "+route-prior"
 
         if field_meta:
             raw_dict["field_metadata"] = field_meta
@@ -231,12 +243,6 @@ class LocalOCRProcessor(BaseOCRProcessor):
         intel = build_document_intelligence(raw_text, page_images=page_images, page_count=page_count)
         normalized["document_type"] = intel["document_type"]
         normalized["scan_quality"] = intel["quality_score"]
-
-        layout = {"block_count": 0, "blocks": []}
-        try:
-            layout = extract_layout_blocks(path)
-        except Exception as e:
-            logger.debug(f"Layout reconstruction skipped for '{path.name}': {e}")
 
         overall_conf = normalized["ocr_confidence"]
         logger.info(f"[OCR Flow] Step 4/5: Overall Extraction Confidence for '{path.name}': {overall_conf * 100:.1f}%")
@@ -264,9 +270,36 @@ class LocalOCRProcessor(BaseOCRProcessor):
             },
             "document_intelligence": intel,
             "layout": layout,
+            "layout_classification": layout_classification,
         }
         attach_field_calibration(normalized, raw_ocr)
         attach_consistency_checks(normalized, raw_ocr)
+
+        fallback = run_vision_fallback(
+            normalized,
+            raw_ocr,
+            page_images,
+            deterministic=raw_dict,
+        )
+        if fallback.get("accepted"):
+            raw_dict = apply_accepted_fallback(raw_dict, fallback)
+            if getattr(settings, "ENABLE_ENTITY_MATCHING", True):
+                raw_dict = apply_entity_matching(raw_dict)
+            if field_meta:
+                raw_dict["field_metadata"] = field_meta
+            rescued = normalize_freight_data(raw_dict, raw_text=raw_text)
+            rescued["document_type"] = intel["document_type"]
+            rescued["scan_quality"] = intel["quality_score"]
+            normalized = rescued
+            overall_conf = normalized["ocr_confidence"]
+            raw_ocr["ocr_confidence"] = overall_conf
+            raw_ocr["field_confidence"] = normalized.get("field_confidence", {})
+            raw_ocr["line_items"] = normalized["line_items"]
+            field_source = field_source + "+groq-vision-fallback"
+            raw_ocr["field_source"] = field_source
+            attach_field_calibration(normalized, raw_ocr)
+            attach_consistency_checks(normalized, raw_ocr)
+        apply_fallback_metadata(raw_ocr, fallback)
 
         return OCRResult(
             extracted_data=normalized,

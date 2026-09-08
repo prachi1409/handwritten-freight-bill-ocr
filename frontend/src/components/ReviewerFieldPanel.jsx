@@ -111,7 +111,7 @@ export default function ReviewerFieldPanel({
 
       {joint && joint.selected && isFieldPresent(currentValue) && String(joint.selected) !== String(currentValue) && (
         <div className="reviewer-muted" data-testid={`joint-selected-${field}`}>
-          Joint decode selected “{joint.selected}” (not applied automatically).
+          Joint decode preferred “{joint.selected}”; OCR-guard kept the extracted value.
         </div>
       )}
 

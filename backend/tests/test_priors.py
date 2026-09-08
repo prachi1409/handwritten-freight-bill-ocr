@@ -5,6 +5,7 @@ from app.ocr.priors import (
     destinations_for,
     drivers_for,
     empty_priors,
+    fill_peaked_party_field,
     likely_entities,
     observe_reviewed_ticket,
     rebuild_priors_from_records,
@@ -119,3 +120,53 @@ def test_gazetteer_matching_is_unchanged():
     out = apply_entity_matching({"consignor": "CleanPlanet", "driver_name": "207855"})
     assert out["consignor"] == "Clean Planet"
     assert out["driver_name"] == "207855"
+
+
+def test_fill_peaked_driver_when_three_parties_known():
+    priors = empty_priors()
+    for index in range(3):
+        observe_reviewed_ticket(TICKET_A, document_id=f"a-{index}", priors=priors)
+    out, report = fill_peaked_party_field(
+        {
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+            "carrier": "CALIFORNIA MATERIALS, INC.",
+            "driver_name": None,
+            "freight_amount": "$10.00",
+        },
+        priors=priors,
+    )
+    assert out["driver_name"] == "Gerald Valentin"
+    assert report["field"] == "driver_name"
+    assert report["probability"] >= 0.80
+    assert out["freight_amount"] == "$10.00"
+
+
+def test_fill_skips_split_driver_history():
+    priors = empty_priors()
+    for index in range(3):
+        observe_reviewed_ticket(TICKET_A, document_id=f"a-{index}", priors=priors)
+        observe_reviewed_ticket(TICKET_B, document_id=f"b-{index}", priors=priors)
+    out, report = fill_peaked_party_field(
+        {
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+            "carrier": "CALIFORNIA MATERIALS, INC.",
+        },
+        priors=priors,
+    )
+    assert report is None
+    assert not out.get("driver_name")
+
+
+def test_fill_skips_when_fewer_than_three_parties():
+    priors = empty_priors()
+    for index in range(3):
+        observe_reviewed_ticket(TICKET_A, document_id=f"a-{index}", priors=priors)
+    out, report = fill_peaked_party_field(
+        {"consignor": "Clean Planet Hooper", "consignee": "Aquamarine Contractors Inc."},
+        priors=priors,
+    )
+    assert report is None
+    assert not out.get("driver_name")
+    assert not out.get("carrier")

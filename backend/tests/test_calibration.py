@@ -10,6 +10,7 @@ from app.ocr.calibration import (
     field_auto_post_threshold,
     label_review_outcome,
     prediction_features,
+    record_review_calibration,
     record_review_outcomes,
 )
 from app.ocr.normalizer import calculate_field_confidences
@@ -205,3 +206,224 @@ def test_heuristic_field_confidence_unchanged_by_calibration_module():
     row = calibrate_field_score("weight", raw["weight"], store={"version": 1, "examples": []})
     assert row["raw_confidence"] == 0.88
     assert row["calibrated_confidence"] == 0.88
+
+
+def _carrier_row(store, document_id):
+    rows = [
+        row
+        for row in store.get("examples") or []
+        if row.get("document_id") == document_id and row.get("field") == "carrier"
+    ]
+    return rows
+
+
+def test_first_review_accepted_is_positive():
+    store = {"version": 1, "examples": []}
+    _meta, store = record_review_calibration(
+        {"carrier": "CMAT", "field_confidence": {"carrier": 0.85}},
+        {"carrier": "CMAT"},
+        document_id="rev-accept",
+        ocr_metadata={},
+        store=store,
+    )
+    rows = _carrier_row(store, "rev-accept")
+    assert len(rows) == 1
+    assert rows[0]["label"] == 1
+    assert rows[0]["raw_confidence"] == 0.85
+
+
+def test_first_review_corrected_is_negative():
+    store = {"version": 1, "examples": []}
+    _meta, store = record_review_calibration(
+        {"carrier": "CMAT", "field_confidence": {"carrier": 0.82}},
+        {"carrier": "ACME"},
+        document_id="rev-correct",
+        ocr_metadata={},
+        store=store,
+    )
+    rows = _carrier_row(store, "rev-correct")
+    assert len(rows) == 1
+    assert rows[0]["label"] == 0
+
+
+def test_first_review_cleared_field_is_negative():
+    store = {"version": 1, "examples": []}
+    _meta, store = record_review_calibration(
+        {"carrier": "CMAT", "field_confidence": {"carrier": 0.80}},
+        {"carrier": ""},
+        document_id="rev-clear",
+        ocr_metadata={},
+        store=store,
+    )
+    rows = _carrier_row(store, "rev-clear")
+    assert len(rows) == 1
+    assert rows[0]["label"] == 0
+
+
+def test_empty_prediction_skips_label():
+    store = {"version": 1, "examples": []}
+    _meta, store = record_review_calibration(
+        {"carrier": "", "field_confidence": {"carrier": 0.0}},
+        {"carrier": "CMAT"},
+        document_id="rev-empty",
+        ocr_metadata={},
+        store=store,
+    )
+    assert _carrier_row(store, "rev-empty") == []
+
+
+def test_rereview_does_not_label_gold_against_gold():
+    store = {"version": 1, "examples": []}
+    meta, store = record_review_calibration(
+        {"carrier": "CMAT", "field_confidence": {"carrier": 0.84}},
+        {"carrier": "ACME", "manually_corrected": True, "reviewed": True},
+        document_id="rev-rereview",
+        ocr_metadata={},
+        store=store,
+    )
+    assert _carrier_row(store, "rev-rereview")[0]["label"] == 0
+    gold_now = {
+        "carrier": "ACME",
+        "manually_corrected": True,
+        "reviewed": True,
+        "field_confidence": {"carrier": 0.99},
+    }
+    meta, store = record_review_calibration(
+        gold_now,
+        {"carrier": "ACME"},
+        document_id="rev-rereview",
+        ocr_metadata=meta,
+        store=store,
+    )
+    rows = _carrier_row(store, "rev-rereview")
+    assert len(rows) == 1
+    assert rows[0]["label"] == 0
+    assert rows[0]["raw_confidence"] == 0.84
+    assert meta["calibration_prediction"]["fields"]["carrier"] == "CMAT"
+    assert "ACME" not in str(rows[0])
+
+
+def test_rereview_changed_again_still_uses_original_prediction():
+    store = {"version": 1, "examples": []}
+    meta, store = record_review_calibration(
+        {"carrier": "CMAT", "field_confidence": {"carrier": 0.81}},
+        {"carrier": "ACME"},
+        document_id="rev-again",
+        ocr_metadata={},
+        store=store,
+    )
+    gold_now = {"carrier": "ACME", "reviewed": True, "manually_corrected": True}
+    _meta, store = record_review_calibration(
+        gold_now,
+        {"carrier": "BETA FREIGHT"},
+        document_id="rev-again",
+        ocr_metadata=meta,
+        store=store,
+    )
+    rows = _carrier_row(store, "rev-again")
+    assert len(rows) == 1
+    assert rows[0]["label"] == 0
+    assert meta["calibration_prediction"]["fields"]["carrier"] == "CMAT"
+
+
+def test_unavailable_original_prediction_does_not_fabricate_label():
+    historical = {"document_id": "hist-1", "field": "carrier", "raw_confidence": 0.9, "label": 1}
+    store = {"version": 1, "examples": [historical]}
+    gold_now = {"carrier": "ACME", "reviewed": True, "manually_corrected": True}
+    meta, store = record_review_calibration(
+        gold_now,
+        {"carrier": "ACME"},
+        document_id="legacy-no-snapshot",
+        ocr_metadata={},
+        store=store,
+    )
+    assert _carrier_row(store, "legacy-no-snapshot") == []
+    assert store["examples"] == [historical]
+    assert "calibration_prediction" not in meta
+
+
+def test_historical_examples_still_fit_after_rereview_helper():
+    store = _store("weight", _enough_pairs())
+    gold_now = {"weight": "12.5", "reviewed": True, "manually_corrected": True}
+    _meta, store = record_review_calibration(
+        gold_now,
+        {"weight": "12.5"},
+        document_id="legacy-skip",
+        ocr_metadata={},
+        store=store,
+    )
+    row = calibrate_field_score("weight", 0.92, store=store)
+    assert row["calibration_status"] == STATUS_CALIBRATED
+    assert row["sample_count"] == 20
+
+
+def test_rereview_keeps_document_excluded_from_its_own_fit():
+    store = _store("carrier", _enough_pairs())
+    meta, store = record_review_calibration(
+        {"carrier": "CMAT", "field_confidence": {"carrier": 0.90}},
+        {"carrier": "ACME"},
+        document_id="current-rev",
+        ocr_metadata={},
+        store=store,
+    )
+    gold_now = {"carrier": "ACME", "reviewed": True, "manually_corrected": True}
+    _meta, store = record_review_calibration(
+        gold_now,
+        {"carrier": "ACME"},
+        document_id="current-rev",
+        ocr_metadata=meta,
+        store=store,
+    )
+    held_out = calibrate_field_score("carrier", 0.90, store=store, exclude_document_id="current-rev")
+    included = calibrate_field_score("carrier", 0.90, store=store)
+    assert held_out["sample_count"] == 20
+    assert included["sample_count"] == 21
+    assert held_out["calibrated_confidence"] >= 0.8
+
+
+def test_review_endpoint_preserves_original_prediction_snapshot(client, db_session):
+    from app.db.models import Document, DocumentStatus
+
+    doc = Document(
+        original_filename="calib_rereview.pdf",
+        stored_filename="calib_rereview.pdf",
+        stored_path="calib_rereview.pdf",
+        file_hash="hash-calib-rereview-001",
+        status=DocumentStatus.REVIEW,
+        extracted_data={"carrier": "CMAT", "consignor": "Bell Marine", "field_confidence": {"carrier": 0.85}},
+        field_confidence={"carrier": 0.85},
+        ocr_metadata={"field_candidates": {}},
+    )
+    db_session.add(doc)
+    db_session.commit()
+    db_session.refresh(doc)
+
+    first = {
+        "bill_number": "HB-1",
+        "invoice_number": "INV-1",
+        "consignor": "Bell Marine",
+        "consignee": "Corone",
+        "origin": "Houston",
+        "destination": "Dallas",
+        "freight_amount": "$10.00",
+        "total_amount": "$10.00",
+        "carrier": "ACME",
+    }
+    response = client.put(f"/api/v1/documents/{doc.id}/review", json={"extracted_data": first})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["manual_corrections"] is True
+    assert body["extracted_data"]["manually_corrected"] is True
+    assert body["extracted_data"]["carrier"] == "ACME"
+    snapshot = (body.get("ocr_metadata") or {}).get("calibration_prediction") or {}
+    assert snapshot.get("fields", {}).get("carrier") == "CMAT"
+
+    second = dict(first)
+    second["carrier"] = "ACME"
+    response = client.put(f"/api/v1/documents/{doc.id}/review", json={"extracted_data": second})
+    assert response.status_code == 200
+    body = response.json()
+    assert body["manual_corrections"] is True
+    snapshot = (body.get("ocr_metadata") or {}).get("calibration_prediction") or {}
+    assert snapshot.get("fields", {}).get("carrier") == "CMAT"
+    assert snapshot.get("fields", {}).get("carrier") != "ACME"

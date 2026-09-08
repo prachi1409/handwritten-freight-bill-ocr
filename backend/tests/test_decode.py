@@ -1,6 +1,6 @@
 """Bounded joint decoder over Point 2 candidates."""
 
-from app.ocr.decode import decode_joint_assignment
+from app.ocr.decode import apply_joint_selection, decode_joint_assignment, resolve_entity_assignment
 from app.ocr.priors import empty_priors, observe_reviewed_ticket
 
 
@@ -140,6 +140,102 @@ def test_single_candidate_is_preserved():
     assert result["selected"]["consignor"] == "Bell Marine"
 
 
+def test_apply_joint_selection_writes_entity_not_money():
+    extracted = {
+        "carrier": "ACME FREIGHT, INC.",
+        "consignee": "Aquamarine Contractors Inc.",
+        "freight_amount": "$1,250.00",
+        "total_amount": "$1,425.00",
+        "weight": "24,500 lbs",
+    }
+    joint = {"selected": {"carrier": "CALIFORNIA MATERIALS, INC.", "consignee": "Aquamarine Contractors Inc."}}
+    out, report = apply_joint_selection(
+        extracted,
+        joint,
+        {
+            "carrier": [
+                _cand("ACME FREIGHT, INC.", 0.82, sources=["gazetteer"]),
+                _cand("CALIFORNIA MATERIALS, INC.", 0.80, prior_p=1.0, prior_count=3, sources=["gazetteer", "prior"]),
+            ]
+        },
+    )
+    assert out["carrier"] == "CALIFORNIA MATERIALS, INC."
+    assert report["fields"]["carrier"]["status"] == "applied"
+    assert out["freight_amount"] == "$1,250.00"
+    assert out["total_amount"] == "$1,425.00"
+    assert out["weight"] == "24,500 lbs"
+
+
+def test_apply_joint_ocr_guard_keeps_strong_ocr():
+    extracted = {"consignor": "Clean Planet"}
+    joint = {"selected": {"consignor": "Clean Planet Hooper"}}
+    out, report = apply_joint_selection(
+        extracted,
+        joint,
+        {
+            "consignor": [
+                _cand("Clean Planet", 1.0, sources=["ocr"]),
+                _cand("Clean Planet Hooper", 0.74, prior_p=1.0, prior_count=3, sources=["gazetteer", "prior"]),
+            ]
+        },
+    )
+    assert out["consignor"] == "Clean Planet"
+    assert report["fields"]["consignor"]["status"] == "ocr_guard"
+
+
+def test_resolve_entity_assignment_recovers_gold_driver_and_carrier():
+    priors = empty_priors()
+    gold = {
+        "carrier": "CALIFORNIA MATERIALS, INC.",
+        "consignor": "Clean Planet Hooper",
+        "consignee": "Aquamarine Contractors Inc.",
+        "driver_name": "Gerald Valentin",
+        "origin": "North Hooper St, Stockton, CA",
+        "destination": "Discovery Bay, CA",
+    }
+    for index in range(3):
+        observe_reviewed_ticket(gold, document_id=f"gold-{index}", priors=priors)
+
+    cheap = {
+        "consignor": "Clean Planet Hooper",
+        "consignee": "Aquamarine Contractors Inc.",
+        "carrier": None,
+        "driver_name": None,
+        "freight_amount": "$1,250.00",
+        "total_amount": "$1,425.00",
+    }
+    matched = dict(cheap)
+    gaz = {
+        "carrier": ["CALIFORNIA MATERIALS, INC.", "ACME FREIGHT, INC."],
+        "consignor": ["Clean Planet Hooper"],
+        "consignee": ["Aquamarine Contractors Inc."],
+        "driver_name": ["Gerald Valentin", "Isaac Cordero"],
+        "origin": ["North Hooper St, Stockton, CA"],
+        "destination": ["Discovery Bay, CA"],
+    }
+    from app.ocr.matching import _empty_memory
+
+    mem = _empty_memory()
+    mem["names"] = {k: list(v) for k, v in gaz.items()}
+    mem["aliases"] = {k: {} for k in gaz}
+
+    out, cands, joint = resolve_entity_assignment(
+        matched,
+        cheap_fields=cheap,
+        priors=priors,
+        gazetteer=gaz,
+        memory=mem,
+    )
+    assert out["carrier"] == "CALIFORNIA MATERIALS, INC."
+    assert out["driver_name"] == "Gerald Valentin"
+    assert out["consignor"] == "Clean Planet Hooper"
+    assert out["consignee"] == "Aquamarine Contractors Inc."
+    assert out["freight_amount"] == "$1,250.00"
+    assert out["total_amount"] == "$1,425.00"
+    assert joint["applied_to_extraction"] is True
+    assert "Gerald Valentin" in [row["value"] for row in cands["driver_name"]]
+
+
 def test_empty_candidates_do_not_crash():
     result = decode_joint_assignment({}, priors=empty_priors())
     assert result["selected"] == {}
@@ -148,3 +244,42 @@ def test_empty_candidates_do_not_crash():
     assert result2["selected"] == {}
     result3 = decode_joint_assignment({"carrier": []}, priors=empty_priors())
     assert result3["selected"] == {}
+
+
+def test_local_processor_writes_peaked_driver_from_route_history(create_pdf, monkeypatch):
+    from app.ocr import vision_fallback as vf
+    from app.ocr.local_processor import LocalOCRProcessor
+    from app.ocr.priors import empty_priors, observe_reviewed_ticket
+
+    gold = {
+        "carrier": "CALIFORNIA MATERIALS, INC.",
+        "consignor": "Clean Planet Hooper",
+        "consignee": "Aquamarine Contractors Inc.",
+        "driver_name": "Gerald Valentin",
+        "origin": "North Hooper St, Stockton, CA",
+        "destination": "Discovery Bay, CA",
+    }
+    priors = empty_priors()
+    for index in range(3):
+        observe_reviewed_ticket(gold, document_id=f"gold-{index}", priors=priors)
+
+    monkeypatch.setattr("app.ocr.priors.load_priors", lambda: priors)
+    monkeypatch.setattr("app.ocr.candidates.load_priors", lambda: priors)
+    monkeypatch.setattr("app.ocr.decode.load_priors", lambda: priors)
+    monkeypatch.setattr(vf.settings, "GROQ_VISION_FALLBACK_ENABLED", False)
+
+    pdf_path = create_pdf(
+        "route_prior_bill.pdf",
+        "FREIGHT BILL\nBill No: HB-10021\nConsignor: Clean Planet Hooper\n"
+        "Consignee: Aquamarine Contractors Inc.\nCarrier: CALIFORNIA MATERIALS, INC.\n"
+        "Origin: North Hooper St, Stockton, CA\nDestination: Discovery Bay, CA\n"
+        "Freight Amount: $1,250.00\nTotal Amount: $1,425.00\n",
+    )
+    result = LocalOCRProcessor().process_document(pdf_path)
+    data = result.extracted_data or {}
+    joint = result.raw_ocr.get("joint_decode") or {}
+    assert joint.get("applied_to_extraction") is True
+    assert data.get("freight_amount") or data.get("total_amount")
+    parties = [data.get("consignor"), data.get("consignee"), data.get("carrier")]
+    if all(parties):
+        assert data.get("driver_name") == "Gerald Valentin"
