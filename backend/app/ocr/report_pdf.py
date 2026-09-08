@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import pymupdf as fitz
 
 FIELD_GROUPS: List[Tuple[str, List[str]]] = [
-    ("Bill identity", ["bill_number", "bill_date", "invoice_number", "carrier"]),
+    ("Bill identity", ["bill_number", "bill_date", "carrier"]),
     ("Parties & route", ["consignor", "consignee", "origin", "destination"]),
     ("Cargo", ["commodity_description", "quantity", "weight"]),
     ("Charges", ["freight_amount", "fuel_surcharge", "handling_charge", "total_amount"]),

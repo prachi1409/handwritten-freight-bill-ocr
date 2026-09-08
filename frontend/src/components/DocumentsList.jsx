@@ -1,8 +1,24 @@
 import React, { useState, useEffect } from 'react';
-import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, AlertCircle, Eye, Search, Filter, Trash2 } from 'lucide-react';
+import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, AlertCircle, Eye, Search, Trash2 } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import UploadModal from './UploadModal';
-import { fetchDocuments, fetchDocumentStats, scanDocuments, deleteDocument } from '../api';
+import ConfirmModal from './ConfirmModal';
+import { fetchDocuments, fetchDocumentStats, scanDocuments, deleteDocument, deleteAllDocuments } from '../api';
+
+const STAT_FILTERS = [
+  { id: 'ALL', label: 'Total documents', key: 'total_documents', icon: FileText, iconBg: '#eff6ff', iconColor: '#2563eb' },
+  { id: 'COMPLETED', label: 'Completed', key: 'completed', icon: CheckCircle2, iconBg: '#f0fdf4', iconColor: '#16a34a' },
+  { id: 'REVIEW', label: 'Review needed', key: 'review_needed', icon: AlertCircle, iconBg: '#fff7ed', iconColor: '#ea580c' },
+  { id: 'PENDING', label: 'Pending', key: 'pending', icon: Clock, iconBg: '#fffbeb', iconColor: '#d97706' },
+  { id: 'FAILED', label: 'Failed', key: 'failed', icon: AlertTriangle, iconBg: '#fef2f2', iconColor: '#dc2626' },
+];
+
+function confidenceTone(conf) {
+  if (conf == null) return 'low';
+  if (conf >= 0.7) return 'high';
+  if (conf >= 0.4) return 'medium';
+  return 'low';
+}
 
 export default function DocumentsList({ onSelectDocument }) {
   const [documents, setDocuments] = useState([]);
@@ -21,13 +37,19 @@ export default function DocumentsList({ onSelectDocument }) {
   const [bannerMessage, setBannerMessage] = useState(null);
   const [searchText, setSearchText] = useState('');
   const [deletingId, setDeletingId] = useState(null);
+  const [isDeletingAll, setIsDeletingAll] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
 
-  const loadData = async () => {
+  const busy = isLoading || isScanning || isDeletingAll || Boolean(deletingId);
+  const totalCount = stats.total_documents || documents.length;
+
+  const loadData = async (query) => {
+    const searchQuery = query === undefined ? searchText : query;
     setIsLoading(true);
     setError(null);
     try {
       const [docsData, statsData] = await Promise.all([
-        fetchDocuments(searchText),
+        fetchDocuments(searchQuery),
         fetchDocumentStats().catch(() => null)
       ]);
       setDocuments(docsData);
@@ -73,24 +95,39 @@ export default function DocumentsList({ onSelectDocument }) {
     loadData();
   };
 
-  const handleDeleteDocument = async (event, doc) => {
-    event.stopPropagation();
-    const filename = doc.original_filename || doc.filename || 'this document';
-    const confirmed = window.confirm(
-      `Delete "${filename}"? This removes the record and the stored file.`
-    );
-    if (!confirmed) return;
+  const handleConfirmDelete = async () => {
+    if (!pendingDelete) return;
 
-    setDeletingId(doc.id);
+    if (pendingDelete.type === 'one') {
+      const doc = pendingDelete.doc;
+      const filename = doc.original_filename || doc.filename || 'this document';
+      setDeletingId(doc.id);
+      setError(null);
+      try {
+        await deleteDocument(doc.id);
+        setBannerMessage(`Deleted "${filename}".`);
+        setPendingDelete(null);
+        await loadData();
+      } catch (err) {
+        setError(err.message || 'Failed to delete document.');
+      } finally {
+        setDeletingId(null);
+      }
+      return;
+    }
+
+    setIsDeletingAll(true);
     setError(null);
     try {
-      await deleteDocument(doc.id);
-      setBannerMessage(`Deleted "${filename}".`);
+      const result = await deleteAllDocuments();
+      const count = result.deleted_count ?? totalCount;
+      setBannerMessage(result.message || `Deleted ${count} document${count === 1 ? '' : 's'}.`);
+      setPendingDelete(null);
       await loadData();
     } catch (err) {
-      setError(err.message || 'Failed to delete document.');
+      setError(err.message || 'Failed to delete all documents.');
     } finally {
-      setDeletingId(null);
+      setIsDeletingAll(false);
     }
   };
 
@@ -119,70 +156,81 @@ export default function DocumentsList({ onSelectDocument }) {
     }
   };
 
+  const deleteFilename = pendingDelete?.type === 'one'
+    ? (pendingDelete.doc.original_filename || pendingDelete.doc.filename || 'this document')
+    : '';
+
   return (
     <div>
-      {/* Page Header */}
       <div className="page-header">
         <div>
-          <h1 className="page-title">Freight Bill OCR</h1>
-          <p className="page-subtitle">Automated handwritten bill parsing, structured extraction, and manual audit verification.</p>
+          <h1 className="page-title">Documents</h1>
+          <p className="page-subtitle">Review extracted freight bills, correct fields, and reprocess OCR when needed.</p>
         </div>
 
         <div className="header-actions">
-          <div className="input-search-box">
-            <Search size={16} color="#94a3b8" style={{ position: 'absolute', left: '0.75rem' }} />
-            <input
-              type="search"
-              className="input-search"
-              value={searchText}
-              onChange={(e) => setSearchText(e.target.value)}
-              onKeyDown={(e) => { if (e.key === 'Enter') loadData(); }}
-              placeholder="Search bill #, filename..."
-            />
-          </div>
-
-          <button 
-            className="btn btn-secondary" 
-            onClick={loadData} 
-            disabled={isLoading || isScanning}
-            title="Refresh document list"
-          >
-            <RefreshCw size={15} className={isLoading ? 'spinner-icon' : ''} />
-            <span>Refresh</span>
-          </button>
-
-          <button 
-            className="btn btn-secondary" 
-            onClick={handleScanDirectory} 
-            disabled={isScanning || isLoading}
-            title="Scan input_doc_location folder"
-          >
-            {isScanning ? (
-              <div className="spinner spinner-dark" />
-            ) : (
-              <FolderSearch size={15} />
-            )}
-            <span>Scan Folder</span>
-          </button>
-
-          <button 
-            className="btn btn-primary" 
+          <button
+            className="btn btn-primary"
             onClick={() => setIsUploadOpen(true)}
+            disabled={isDeletingAll}
           >
             <Upload size={15} />
-            <span>Upload PDF</span>
+            <span>Upload bill</span>
           </button>
         </div>
       </div>
 
-      {/* Banner Notifications */}
+      <div className="list-toolbar">
+        <div className="input-search-box">
+          <Search size={16} color="#94a3b8" />
+          <input
+            type="search"
+            className="input-search"
+            value={searchText}
+            onChange={(e) => setSearchText(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') loadData(); }}
+            placeholder="Search bill # or filename, then press Enter"
+            aria-label="Search documents"
+          />
+        </div>
+
+        <div className="list-toolbar-actions">
+          <button
+            className="btn btn-secondary btn-icon"
+            onClick={loadData}
+            disabled={busy}
+            title="Refresh document list"
+            aria-label="Refresh"
+          >
+            <RefreshCw size={15} className={isLoading ? 'spinner-icon' : ''} />
+          </button>
+
+          <button
+            className="btn btn-secondary"
+            onClick={handleScanDirectory}
+            disabled={busy}
+            title="Scan input_doc_location folder"
+          >
+            {isScanning ? <div className="spinner spinner-dark" /> : <FolderSearch size={15} />}
+            <span>Scan folder</span>
+          </button>
+
+          <button
+            className="btn btn-ghost-danger"
+            onClick={() => setPendingDelete({ type: 'all' })}
+            disabled={isDeletingAll || isLoading || isScanning || !totalCount}
+            title="Delete every freight bill and stored file"
+          >
+            {isDeletingAll ? <div className="spinner spinner-dark" /> : <Trash2 size={15} />}
+            <span>Delete all</span>
+          </button>
+        </div>
+      </div>
+
       {bannerMessage && (
         <div className="alert alert-success">
           <span>{bannerMessage}</span>
-          <button 
-            onClick={() => setBannerMessage(null)} 
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontWeight: 700 }}
-          >
+          <button type="button" className="alert-dismiss" onClick={() => setBannerMessage(null)} aria-label="Dismiss">
             ✕
           </button>
         </div>
@@ -197,103 +245,39 @@ export default function DocumentsList({ onSelectDocument }) {
         </div>
       )}
 
-      {/* 5 Modern SaaS KPI Statistics Cards */}
       <div className="stats-grid">
-        <div 
-          className={`stat-card stat-all ${selectedFilter === 'ALL' ? 'active' : ''}`}
-          style={{ cursor: 'pointer' }} 
-          onClick={() => setSelectedFilter('ALL')}
-        >
-          <div className="stat-icon" style={{ backgroundColor: '#eff6ff', color: '#2563eb' }}>
-            <FileText size={20} />
-          </div>
-          <div>
-            <div className="stat-value">{stats.total_documents}</div>
-            <div className="stat-label">Total Documents</div>
-          </div>
-        </div>
-
-        <div 
-          className={`stat-card stat-completed ${selectedFilter === 'COMPLETED' ? 'active' : ''}`}
-          style={{ cursor: 'pointer' }} 
-          onClick={() => setSelectedFilter('COMPLETED')}
-        >
-          <div className="stat-icon" style={{ backgroundColor: '#f0fdf4', color: '#16a34a' }}>
-            <CheckCircle2 size={20} />
-          </div>
-          <div>
-            <div className="stat-value">{stats.completed}</div>
-            <div className="stat-label">Completed</div>
-          </div>
-        </div>
-
-        <div 
-          className={`stat-card stat-review ${selectedFilter === 'REVIEW' ? 'active' : ''}`}
-          style={{ cursor: 'pointer' }} 
-          onClick={() => setSelectedFilter('REVIEW')}
-        >
-          <div className="stat-icon" style={{ backgroundColor: '#fff7ed', color: '#ea580c' }}>
-            <AlertCircle size={20} />
-          </div>
-          <div>
-            <div className="stat-value">{stats.review_needed}</div>
-            <div className="stat-label">Review Needed</div>
-          </div>
-        </div>
-
-        <div 
-          className={`stat-card stat-pending ${selectedFilter === 'PENDING' ? 'active' : ''}`}
-          style={{ cursor: 'pointer' }} 
-          onClick={() => setSelectedFilter('PENDING')}
-        >
-          <div className="stat-icon" style={{ backgroundColor: '#fffbeb', color: '#d97706' }}>
-            <Clock size={20} />
-          </div>
-          <div>
-            <div className="stat-value">{stats.pending}</div>
-            <div className="stat-label">Pending Processing</div>
-          </div>
-        </div>
-
-        <div 
-          className={`stat-card stat-failed ${selectedFilter === 'FAILED' ? 'active' : ''}`}
-          style={{ cursor: 'pointer' }} 
-          onClick={() => setSelectedFilter('FAILED')}
-        >
-          <div className="stat-icon" style={{ backgroundColor: '#fef2f2', color: '#dc2626' }}>
-            <AlertTriangle size={20} />
-          </div>
-          <div>
-            <div className="stat-value">{stats.failed}</div>
-            <div className="stat-label">Failed</div>
-          </div>
-        </div>
+        {STAT_FILTERS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.id}
+              type="button"
+              className={`stat-card ${selectedFilter === item.id ? 'active' : ''}`}
+              onClick={() => setSelectedFilter(item.id)}
+            >
+              <div className="stat-icon" style={{ backgroundColor: item.iconBg, color: item.iconColor }}>
+                <Icon size={20} />
+              </div>
+              <div>
+                <div className="stat-value">{stats[item.key]}</div>
+                <div className="stat-label">{item.label}</div>
+              </div>
+            </button>
+          );
+        })}
       </div>
 
-      {/* Main Documents Table Card with Segmented Filter Pills Bar */}
       <div className="card">
         <div className="card-header" style={{ flexWrap: 'wrap', gap: '1rem' }}>
-          <div className="card-title">
-            <Filter size={18} color="#2563eb" />
-            <span>Processed Freight Documents</span>
-          </div>
-          
-          <div className="segmented-filters">
-            {[
-              { id: 'ALL', label: `All (${stats.total_documents})` },
-              { id: 'COMPLETED', label: `Completed (${stats.completed})` },
-              { id: 'REVIEW', label: `Review Needed (${stats.review_needed})` },
-              { id: 'PENDING', label: `Pending (${stats.pending})` },
-              { id: 'FAILED', label: `Failed (${stats.failed})` },
-            ].map(tab => (
-              <button
-                key={tab.id}
-                className={`tab-pill ${selectedFilter === tab.id ? 'active' : ''}`}
-                onClick={() => setSelectedFilter(tab.id)}
-              >
-                {tab.label}
-              </button>
-            ))}
+          <div>
+            <div className="card-title">
+              <FileText size={18} color="#2563eb" />
+              <span>Freight bills</span>
+            </div>
+            <div className="card-title-meta" style={{ marginTop: '0.2rem' }}>
+              {filteredDocuments.length} shown
+              {selectedFilter !== 'ALL' ? ` · ${selectedFilter.toLowerCase()}` : ''}
+            </div>
           </div>
         </div>
 
@@ -310,12 +294,32 @@ export default function DocumentsList({ onSelectDocument }) {
             <h3 className="state-title">No documents found</h3>
             <p className="state-desc">
               {selectedFilter === 'ALL'
-                ? 'Upload a freight bill PDF or scan the input folder to begin OCR processing.'
-                : `No documents currently match the '${selectedFilter}' status filter.`}
+                ? (searchText.trim()
+                  ? `No documents match “${searchText.trim()}”.`
+                  : 'Upload a freight bill or scan the input folder to begin OCR processing.')
+                : `No documents currently match the ${selectedFilter.toLowerCase()} filter.`}
             </p>
-            {selectedFilter !== 'ALL' && (
-              <button className="btn btn-secondary" onClick={() => setSelectedFilter('ALL')}>
-                Show All Documents
+            {selectedFilter === 'ALL' && !searchText.trim() ? (
+              <div style={{ display: 'flex', gap: '0.75rem', flexWrap: 'wrap', justifyContent: 'center' }}>
+                <button className="btn btn-primary" onClick={() => setIsUploadOpen(true)}>
+                  <Upload size={15} />
+                  <span>Upload bill</span>
+                </button>
+                <button className="btn btn-secondary" onClick={handleScanDirectory} disabled={isScanning}>
+                  <FolderSearch size={15} />
+                  <span>Scan folder</span>
+                </button>
+              </div>
+            ) : (
+              <button
+                className="btn btn-secondary"
+                onClick={() => {
+                  setSelectedFilter('ALL');
+                  setSearchText('');
+                  loadData('');
+                }}
+              >
+                Show all documents
               </button>
             )}
           </div>
@@ -326,30 +330,32 @@ export default function DocumentsList({ onSelectDocument }) {
                 <tr>
                   <th>Filename</th>
                   <th>Status</th>
-                  <th>Document Type</th>
+                  <th>Type</th>
                   <th>Confidence</th>
                   <th>Created</th>
                   <th>Processed</th>
-                  <th style={{ textAlign: 'right' }}>Action</th>
+                  <th style={{ textAlign: 'right' }}>Actions</th>
                 </tr>
               </thead>
               <tbody>
                 {filteredDocuments.map((doc) => {
                   const conf = doc.overall_confidence ?? doc.confidence;
+                  const tone = confidenceTone(conf);
+                  const filename = doc.original_filename || doc.filename;
                   return (
-                    <tr key={doc.id}>
+                    <tr
+                      key={doc.id}
+                      className="clickable"
+                      onClick={() => onSelectDocument(doc.id)}
+                    >
                       <td>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: '0.875rem' }}>
-                          <div style={{ padding: '0.625rem', background: '#eff6ff', borderRadius: '0.625rem', color: '#2563eb', flexShrink: 0 }}>
-                            <FileText size={20} />
+                        <div className="file-cell">
+                          <div className="file-cell-icon">
+                            <FileText size={18} />
                           </div>
-                          <div>
-                            <div style={{ fontWeight: 700, color: '#0f172a', fontSize: '0.9375rem' }}>
-                              {doc.original_filename || doc.filename}
-                            </div>
-                            <div className="mono" style={{ color: '#94a3b8', fontSize: '0.75rem', marginTop: '0.125rem' }}>
-                              ID: {doc.id}
-                            </div>
+                          <div style={{ minWidth: 0 }}>
+                            <div className="file-cell-name" title={filename}>{filename}</div>
+                            <div className="file-cell-meta mono">ID {String(doc.id).slice(0, 8)}</div>
                           </div>
                         </div>
                       </td>
@@ -357,48 +363,56 @@ export default function DocumentsList({ onSelectDocument }) {
                         <StatusBadge status={doc.status} />
                       </td>
                       <td>
-                        <span style={{ fontSize: '0.8125rem', fontWeight: 600, color: '#334155' }}>
+                        <span className="type-pill">
                           {(doc.document_type || 'freight_bill').replace(/_/g, ' ')}
                         </span>
                       </td>
                       <td>
-                        <span style={{ fontSize: '0.8125rem', fontWeight: 700, color: conf >= 0.70 ? '#16a34a' : (conf ? '#ea580c' : '#94a3b8') }}>
-                          {conf !== null && conf !== undefined ? `${(conf * 100).toFixed(1)}%` : '—'}
-                        </span>
+                        {conf !== null && conf !== undefined ? (
+                          <div className="conf-meter">
+                            <div className="conf-meter-track">
+                              <div
+                                className={`conf-meter-fill ${tone}`}
+                                style={{ width: `${Math.max(4, Math.min(100, conf * 100))}%` }}
+                              />
+                            </div>
+                            <span className="conf-meter-label" style={{ color: tone === 'high' ? '#16a34a' : (tone === 'medium' ? '#ea580c' : '#94a3b8') }}>
+                              {(conf * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="conf-meter-label" style={{ color: '#94a3b8' }}>—</span>
+                        )}
                       </td>
                       <td>
-                        <div style={{ color: '#475569', fontSize: '0.8125rem', fontWeight: 500 }}>
-                          {formatDate(doc.created_at)}
-                        </div>
+                        <div className="table-date">{formatDate(doc.created_at)}</div>
                       </td>
                       <td>
-                        <div style={{ color: '#475569', fontSize: '0.8125rem', fontWeight: 500 }}>
-                          {formatDate(doc.processed_at)}
-                        </div>
+                        <div className="table-date">{formatDate(doc.processed_at)}</div>
                       </td>
-                      <td style={{ textAlign: 'right' }}>
-                        <div style={{ display: 'inline-flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+                      <td style={{ textAlign: 'right' }} onClick={(event) => event.stopPropagation()}>
+                        <div className="table-actions">
                           <button
                             className="btn btn-outline"
-                            style={{ padding: '0.375rem 0.875rem', fontSize: '0.8125rem' }}
+                            style={{ padding: '0.375rem 0.75rem', fontSize: '0.8125rem' }}
                             onClick={() => onSelectDocument(doc.id)}
                           >
                             <Eye size={14} />
-                            <span>View</span>
+                            <span>Open</span>
                           </button>
                           <button
-                            className="btn btn-danger"
-                            style={{ padding: '0.375rem 0.75rem', fontSize: '0.8125rem' }}
-                            onClick={(event) => handleDeleteDocument(event, doc)}
-                            disabled={deletingId === doc.id}
+                            className="btn btn-danger btn-icon"
+                            style={{ width: '2.15rem', height: '2.15rem' }}
+                            onClick={() => setPendingDelete({ type: 'one', doc })}
+                            disabled={deletingId === doc.id || isDeletingAll}
                             title="Delete document"
+                            aria-label={`Delete ${filename}`}
                           >
                             {deletingId === doc.id ? (
                               <div className="spinner spinner-dark" />
                             ) : (
                               <Trash2 size={14} />
                             )}
-                            <span>Delete</span>
                           </button>
                         </div>
                       </td>
@@ -411,11 +425,27 @@ export default function DocumentsList({ onSelectDocument }) {
         )}
       </div>
 
-      {/* Upload Modal */}
-      <UploadModal 
-        isOpen={isUploadOpen} 
-        onClose={() => setIsUploadOpen(false)} 
+      <UploadModal
+        isOpen={isUploadOpen}
+        onClose={() => setIsUploadOpen(false)}
         onUploadSuccess={handleUploadSuccess}
+      />
+
+      <ConfirmModal
+        isOpen={Boolean(pendingDelete)}
+        title={pendingDelete?.type === 'all' ? 'Delete all freight bills?' : 'Delete this document?'}
+        description={
+          pendingDelete?.type === 'all'
+            ? `This permanently removes ${totalCount} bill${totalCount === 1 ? '' : 's'} and their stored files. This cannot be undone.`
+            : `“${deleteFilename}” will be removed from the list and storage. This cannot be undone.`
+        }
+        confirmLabel={pendingDelete?.type === 'all' ? 'Delete all' : 'Delete'}
+        danger
+        isBusy={isDeletingAll || Boolean(deletingId)}
+        onCancel={() => {
+          if (!isDeletingAll && !deletingId) setPendingDelete(null);
+        }}
+        onConfirm={handleConfirmDelete}
       />
     </div>
   );

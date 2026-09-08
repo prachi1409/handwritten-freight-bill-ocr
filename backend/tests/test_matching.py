@@ -5,10 +5,33 @@ from app.ocr.matching import (
     apply_entity_matching,
     apply_zip_hints,
     fix_id_glyphs,
+    is_weak_entity_stub,
     match_gazetteer_name,
     name_variants,
     SEED_GAZETTEER,
 )
+
+
+def test_short_ocr_fragments_are_weak_stubs():
+    assert is_weak_entity_stub("consignor", "clean") is True
+    assert is_weak_entity_stub("consignee", "Aaua") is True
+    assert is_weak_entity_stub("consignor", "Clean Planet Hooper") is False
+    assert is_weak_entity_stub("consignee", "Aquamarine Contractors Inc.") is False
+    assert is_weak_entity_stub("carrier", "CMAT") is False
+    assert is_weak_entity_stub("bill_number", "16766-1") is False
+    assert is_weak_entity_stub("total_amount", "$100.00") is False
+    assert is_weak_entity_stub("invoice_number", "INV-1") is False
+    assert is_weak_entity_stub("destination", "YRZ5 Stockton Discavery Bay CA") is True
+    assert is_weak_entity_stub("destination", "Discovery Bay, CA") is False
+    assert is_weak_entity_stub("consignor", "California Materials, Inc.") is True
+    assert is_weak_entity_stub("consignor", "CALIFORNIA MATERIALS, INC.") is True
+    assert "California Materials" not in " ".join(SEED_GAZETTEER["consignor"])
+
+
+def test_discavery_snaps_to_discovery_bay():
+    hit = match_gazetteer_name("Discavery", SEED_GAZETTEER["destination"])
+    assert hit is not None
+    assert "Discovery" in hit
 
 
 def test_cleanplanet_snaps_to_clean_planet():
@@ -51,11 +74,16 @@ def test_apply_entity_matching_company_and_place():
         "bill_number": "1674O-1",
         "driver_name": "207855",
     })
-    assert out["consignor"] == "Clean Planet"
+    assert out["consignor"] == "Clean Planet Hooper"
     assert out["consignee"] == "A&A Concrete"
     assert out["origin"] == "Stockton, CA"
     assert out["bill_number"] == "16740-1"
     assert out["driver_name"] == "207855"
+
+
+def test_apply_entity_matching_snaps_discavery_destination():
+    out = apply_entity_matching({"destination": "Discavery"})
+    assert "Discovery" in (out.get("destination") or "")
 
 
 def test_entity_matching_can_be_disabled(monkeypatch):
@@ -69,6 +97,70 @@ def test_entity_matching_can_be_disabled(monkeypatch):
 def test_longer_ocr_name_is_not_shrunk():
     hit = match_gazetteer_name("Clean Planet Hooper", ["Clean Planet"])
     assert hit is None
+
+
+def test_stockton_does_not_expand_to_hopper_street():
+    hit = match_gazetteer_name(
+        "STOCKTON",
+        ["STOCKTON N. HOPPER ST", "Stockton, CA", "STOCKTON", "N. Hooper St."],
+    )
+    assert hit in ("STOCKTON", "Stockton, CA")
+    assert "HOPPER" not in (hit or "").upper()
+    assert "HOOPER" not in (hit or "").upper()
+
+
+def test_city_only_origin_does_not_invent_a_street():
+    from app.ocr.matching import apply_entity_matching, _empty_memory
+
+    memory = _empty_memory()
+    out = apply_entity_matching({"origin": "STOCKTON"}, memory=memory)
+    assert "Hooper" not in (out.get("origin") or "")
+    assert "Hopper" not in (out.get("origin") or "")
+
+
+def test_dtscover_token_snaps_to_discovery_bay():
+    hit = match_gazetteer_name("HOOPER DTSCOVER BA 4", SEED_GAZETTEER["destination"])
+    assert hit is not None
+    assert "Discovery" in hit
+
+
+def test_cpi_hooper_and_aguamarene_aliases():
+    from app.ocr.matching import apply_entity_matching, _empty_memory
+
+    memory = _empty_memory()
+    out = apply_entity_matching(
+        {"consignor": "C.P.I.HOOPER", "consignee": "AGUAMARENE"},
+        memory=memory,
+    )
+    assert out["consignor"] == "Clean Planet Hooper"
+    assert "Aquamarine" in (out.get("consignee") or "")
+
+
+def test_crim_planet_and_noen_houper_aliases():
+    from app.ocr.matching import apply_entity_matching, _empty_memory
+
+    memory = _empty_memory()
+    out = apply_entity_matching(
+        {"consignor": "Crim Planet Hooper", "origin": "Noen Houper"},
+        memory=memory,
+    )
+    assert out["consignor"] == "Clean Planet Hooper"
+    assert out["origin"] == "North Hooper"
+    out2 = apply_entity_matching({"consignor": "Grand Planet Hooper"}, memory=_empty_memory())
+    assert out2["consignor"] == "Clean Planet Hooper"
+    out3 = apply_entity_matching(
+        {"consignor": "Ocean Planet", "origin": "V.hosper"},
+        memory=_empty_memory(),
+    )
+    assert out3["consignor"] == "Clean Planet Hooper"
+    assert "Hooper" in (out3.get("origin") or "")
+
+
+def test_unknown_place_salad_is_a_weak_stub():
+    assert is_weak_entity_stub("origin", "V.hosper") is True
+    assert is_weak_entity_stub("destination", "Htth u Uol/raels 30 Pelnr") is True
+    assert is_weak_entity_stub("origin", "Stockton, CA") is False
+    assert is_weak_entity_stub("destination", "Discovery Bay, CA") is False
 
 
 def test_review_alias_snaps_far_ocr():
@@ -114,3 +206,31 @@ def test_gold_harvest_trusts_review_not_ocr_junk():
     assert "aquamatrix" not in names
     assert "CALIFORNIA MATERIALS, INC." in memory["names"]["carrier"]
     assert any("Hooper" in s for s in memory["streets_by_zip"].get("95213", []))
+
+
+def test_letterhead_is_not_harvested_or_snapped_as_consignor():
+    from app.ocr.matching import add_gazetteer_value, apply_entity_matching, merge_gold_records, _empty_memory
+
+    gaz = add_gazetteer_value(
+        "consignor",
+        "California Materials, Inc.",
+        {"consignor": ["Clean Planet Hooper"], "carrier": ["CALIFORNIA MATERIALS, INC."]},
+    )
+    assert "California Materials, Inc." not in gaz["consignor"]
+
+    memory = _empty_memory()
+    merge_gold_records(
+        [{"consignor": "California Materials, Inc.", "carrier": "CALIFORNIA MATERIALS, INC."}],
+        trusted=True,
+        memory=memory,
+    )
+    assert not any("california" in (n or "").lower() and "materials" in (n or "").lower() for n in memory["names"]["consignor"])
+
+    out = apply_entity_matching({
+        "consignor": "California Materials, Inc.",
+        "carrier": "CALIFORNIA MATERIALS, INC.",
+        "consignee": "Aquamarine",
+    })
+    assert out["consignor"] is None
+    assert out["carrier"] == "CALIFORNIA MATERIALS, INC."
+    assert "Aquamarine" in (out.get("consignee") or "")

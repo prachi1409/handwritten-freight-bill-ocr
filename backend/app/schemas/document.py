@@ -119,3 +119,9 @@ class DocumentUploadResponse(BaseModel):
     file_hash: Optional[str] = None
     hash: Optional[str] = None
     message: str
+
+
+class DocumentDeleteAllResponse(BaseModel):
+    """Result of deleting every freight-bill record and stored file."""
+    deleted_count: int
+    message: str

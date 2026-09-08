@@ -10,14 +10,25 @@ logger = logging.getLogger(__name__)
 LABEL_PATTERNS = {
     "bill_number": [r"bill\s*no", r"bill\s*num", r"bill\s*#", r"bol\s*no", r"waybill", r"n\.?\s*[ºo°]?\s*de\s+factura", r"carta\s*de\s*porte"],
     "invoice_number": [r"invoice\s*num", r"invoice\s*no", r"inv\s*no", r"inv\s*#", r"n[úu]mero\s+de\s+factura", r"numero\s+de\s+factura"],
-    "bill_date": [r"^date\b", r"^dated\b", r"ship\s*date", r"^fecha(?!/?hora)"],
+    "bill_date": [
+        r"^date\b",
+        r"^dated\b",
+        r"ship\s*date",
+        r"^fecha(?!/?hora)",
+        r"^mo\.?\s*\d{0,2}$",
+        r"^day\.?\s*\d{1,2}$",
+        r"^yr\.?\s*\d{2,4}$",
+    ],
     "consignor": [r"consignor", r"shipper", r"billed\s*from", r"remitente", r"expedidor"],
     "consignee": [r"consignee", r"receiver", r"billed\s*to", r"destinatario", r"consignatario"],
     "origin": [r"point\s*of\s*origin", r"pointoforigin", r"pickup\s*loc", r"origen", r"\borigin\b"],
     "destination": [r"point\s*of\s*destination", r"pointofdestination", r"destnaton", r"delivery\s*loc", r"destino", r"\bdestination\b"],
     "driver_signature": [r"firma\s+del\s+conductor", r"driver\s*signature"],
     "consignee_signature": [r"firma\s+del\s+destinatario", r"consignee\s*signature", r"receiver\s*signature"],
-    "vehicle_number": [r"vehicle\s*number", r"truck\s*no", r"n[úu]mero\s+de\s+veh", r"numero\s+de\s+vehiculo"],
+    "vehicle_number": [
+        r"vehicle\s*number", r"truck\s*number", r"truck\s*no", r"truckno",
+        r"n[úu]mero\s+de\s+veh", r"numero\s+de\s+vehiculo",
+    ],
     "weight": [r"weight", r"gross\s*wt", r"weght", r"peso"],
     "carrier": [r"carrier\s*name\b", r"carrier\b", r"(?<!-)hauler", r"transporter", r"transportista"],
     "commodity_description": [r"commodity\s*description", r"commodity", r"comodtv", r"cargo\s*desc", r"descripci", r"mercanc"],
@@ -182,9 +193,15 @@ def extract_fields_via_spatial_layout(ocr_items: List[Dict[str, Any]]) -> Tuple[
 
         if label_key == "bill_date":
             def _looks_like_date(item: Dict[str, Any]) -> bool:
+                text = item["text"]
+                if re.search(r"\bJOB\b", text, re.IGNORECASE):
+                    return False
                 return bool(re.search(
-                    r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[/.-]\d{1,2}[/.-]\d{1,2}",
-                    item["text"],
+                    r"\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}"
+                    r"|\d{4}[/.-]\d{1,2}[/.-]\d{1,2}"
+                    r"|\b(?:MO|DAY|YR)\.?\s*\d{1,4}\b",
+                    text,
+                    re.IGNORECASE,
                 ))
             same_line_candidates = [c for c in same_line_candidates if _looks_like_date(c[1])]
             below_candidates = [c for c in below_candidates if _looks_like_date(c[1])]
@@ -193,6 +210,14 @@ def extract_fields_via_spatial_layout(ocr_items: List[Dict[str, Any]]) -> Tuple[
                 return bool(re.search(r"\d", item["text"]))
             same_line_candidates = [c for c in same_line_candidates if _looks_like_weight(c[1])]
             below_candidates = [c for c in below_candidates if _looks_like_weight(c[1])]
+        elif label_key == "vehicle_number":
+            def _looks_like_truck(item: Dict[str, Any]) -> bool:
+                text = item["text"]
+                if re.search(r"miles|hours|license|trailer", text, re.IGNORECASE):
+                    return False
+                return bool(re.search(r"\d", text))
+            same_line_candidates = [c for c in same_line_candidates if _looks_like_truck(c[1])]
+            below_candidates = [c for c in below_candidates if _looks_like_truck(c[1])]
 
         same_line_candidates.sort(key=lambda x: x[0])
         below_candidates.sort(key=lambda x: x[0])

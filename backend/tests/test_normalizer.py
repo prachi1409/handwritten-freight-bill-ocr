@@ -58,6 +58,18 @@ def test_date_normalization():
     assert normalize_date("08/26/2026") == "2026-08-26"
     assert normalize_date("DBTRSETWSBLBMD") is None
     assert normalize_date("MO. 2 DAY 2 YR. 26") == "2026-02-02"
+    from app.ocr.normalizer import normalize_freight_data
+
+    salad = normalize_freight_data({"destination": "YRZ5 Stockton Discavery Bay CA"})
+    assert salad.get("destination") in (None, "")
+    from app.ocr.normalizer import parse_boxed_month_day_year
+
+    assert parse_boxed_month_day_year("JOB DAY 1347-3 NO. CA0385520") is None
+    assert parse_boxed_month_day_year("JOB DAY 1105-2\nNo. 9503-4") is None
+    assert parse_boxed_month_day_year("DATE\nMO. 4\nDAY 30\n25") == "2025-04-30"
+    assert parse_boxed_month_day_year("YR.26\nMO. 2\nDAY 2") == "2026-02-02"
+    assert normalize_date("4") is None
+    assert normalize_date("30") is None
 
 
 def test_no_hallucinated_placeholder_values():
@@ -131,6 +143,7 @@ def test_validate_extraction_status_missing_optional_field_still_completed():
         "destination": "Delhi Hub",
         "freight_amount": "$3,450.00",
         "total_amount": "$3,450.00",
+        "invoice_number": None,  # unused; bill_number is the ticket id
         "vehicle_number": None  # optional
     }
     status, warnings = validate_extraction_status(data, confidence=0.88)

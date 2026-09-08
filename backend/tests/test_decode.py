@@ -183,6 +183,83 @@ def test_apply_joint_ocr_guard_keeps_strong_ocr():
     assert report["fields"]["consignor"]["status"] == "ocr_guard"
 
 
+def test_apply_joint_does_not_lock_place_salad():
+    extracted = {"origin": "V.hosper", "destination": "Htth u Uol/raels 30 Pelnr"}
+    joint = {
+        "selected": {
+            "origin": "W. Hooper St.",
+            "destination": "Palm Wood",
+        }
+    }
+    out, report = apply_joint_selection(
+        extracted,
+        joint,
+        {
+            "origin": [
+                _cand("V.hosper", 1.0, sources=["ocr"]),
+                _cand("W. Hooper St.", 0.72, sources=["gazetteer"]),
+            ],
+            "destination": [
+                _cand("Htth u Uol/raels 30 Pelnr", 1.0, sources=["ocr"]),
+                _cand("Palm Wood", 0.70, sources=["gazetteer"]),
+            ],
+        },
+    )
+    assert out["origin"] == "W. Hooper St."
+    assert out["destination"] == "Palm Wood"
+    assert report["fields"]["origin"]["status"] == "applied"
+    assert report["fields"]["destination"]["status"] == "applied"
+
+
+def test_apply_joint_rejects_datebox_destination_salad():
+    extracted = {"destination": "YRZ5 Stockton Discavery Bay CA", "origin": "STOCKTON"}
+    joint = {"selected": {"destination": "YRZ5 Stockton Discavery Bay CA"}}
+    out, report = apply_joint_selection(
+        extracted,
+        joint,
+        {
+            "destination": [
+                _cand("YRZ5 Stockton Discavery Bay CA", 1.0, prior_count=1, sources=["ocr", "prior"]),
+            ]
+        },
+    )
+    assert out.get("destination") in (None, "")
+    assert report["fields"]["destination"]["status"] == "rejected_junk"
+
+
+def test_apply_joint_replaces_salad_destination_with_gazetteer_place():
+    extracted = {"destination": "YRZ5 Stockton Discavery Bay CA"}
+    joint = {"selected": {"destination": "Discovery Bay, CA"}}
+    out, report = apply_joint_selection(
+        extracted,
+        joint,
+        {
+            "destination": [
+                _cand("Discovery Bay, CA", 0.80, prior_p=1.0, prior_count=3, sources=["gazetteer", "prior"]),
+            ]
+        },
+    )
+    assert out["destination"] == "Discovery Bay, CA"
+    assert report["fields"]["destination"]["status"] == "applied"
+
+
+def test_apply_joint_replaces_ocr_stub_with_historical_name():
+    extracted = {"consignor": "clean"}
+    joint = {"selected": {"consignor": "Clean Planet Hooper"}}
+    out, report = apply_joint_selection(
+        extracted,
+        joint,
+        {
+            "consignor": [
+                _cand("clean", 1.0, sources=["ocr"]),
+                _cand("Clean Planet Hooper", 0.74, prior_p=1.0, prior_count=3, sources=["gazetteer", "prior"]),
+            ]
+        },
+    )
+    assert out["consignor"] == "Clean Planet Hooper"
+    assert report["fields"]["consignor"]["status"] == "applied"
+
+
 def test_resolve_entity_assignment_recovers_gold_driver_and_carrier():
     priors = empty_priors()
     gold = {
@@ -244,6 +321,50 @@ def test_empty_candidates_do_not_crash():
     assert result2["selected"] == {}
     result3 = decode_joint_assignment({"carrier": []}, priors=empty_priors())
     assert result3["selected"] == {}
+
+
+def test_apply_joint_rejects_letterhead_as_consignor():
+    extracted = {"carrier": "CALIFORNIA MATERIALS, INC.", "consignor": None}
+    joint = {"selected": {"consignor": "California Materials, Inc.", "carrier": "CALIFORNIA MATERIALS, INC."}}
+    out, report = apply_joint_selection(
+        extracted,
+        joint,
+        {
+            "consignor": [_cand("California Materials, Inc.", 0.80, sources=["ocr_text", "gazetteer"])],
+            "carrier": [_cand("CALIFORNIA MATERIALS, INC.", 1.0, sources=["ocr"])],
+        },
+    )
+    assert out.get("consignor") in (None, "")
+    assert report["fields"]["consignor"]["status"] == "rejected_letterhead"
+    assert out["carrier"] == "CALIFORNIA MATERIALS, INC."
+
+
+def test_resolve_does_not_fill_empty_consignor_from_letterhead():
+    from app.ocr.matching import _empty_memory
+    from app.ocr.priors import empty_priors
+
+    gaz = {
+        "carrier": ["CALIFORNIA MATERIALS, INC."],
+        "consignor": ["Clean Planet Hooper", "California Materials, Inc."],
+        "consignee": ["Aquamarine"],
+        "driver_name": [],
+        "origin": [],
+        "destination": [],
+    }
+    mem = _empty_memory()
+    mem["names"] = {k: list(v) for k, v in gaz.items()}
+    cheap = {"carrier": "CALIFORNIA MATERIALS, INC.", "consignor": None, "consignee": None}
+    out, cands, joint = resolve_entity_assignment(
+        dict(cheap),
+        cheap_fields=cheap,
+        raw_text="CALIFORNIA MATERIALS, INC.\nSTOCKTON, CA\nNo. 9503-1",
+        priors=empty_priors(),
+        gazetteer=gaz,
+        memory=mem,
+    )
+    assert out.get("consignor") in (None, "")
+    assert "California Materials, Inc." not in [row["value"] for row in (cands.get("consignor") or [])]
+    assert out["carrier"] == "CALIFORNIA MATERIALS, INC."
 
 
 def test_local_processor_writes_peaked_driver_from_route_history(create_pdf, monkeypatch):

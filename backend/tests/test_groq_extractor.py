@@ -79,8 +79,7 @@ def test_spanish_factura_de_flete_does_not_steal_invoice():
     )
     fields = extract_fields_from_raw_text(text)
     assert fields.get("bill_number") == "FB-10247"
-    assert fields.get("invoice_number") == "INV-30931"
-    assert fields.get("invoice_number") != "DE"
+    assert fields.get("invoice_number") in (None, "")
     assert "Acme" in (fields.get("consignor") or "")
     assert "Midwest" in (fields.get("carrier") or "")
 
@@ -121,7 +120,7 @@ recepción:
 """
     fields = extract_fields_from_raw_text(text)
     assert fields.get("bill_number") == "FB-10247"
-    assert fields.get("invoice_number") == "INV-30931"
+    assert fields.get("invoice_number") in (None, "")
     assert fields.get("quantity") == "49"
     assert fields.get("weight") == "24,126"
     assert "564.90" in (fields.get("freight_amount") or "")
@@ -161,7 +160,7 @@ def test_hindi_devanagari_bill_and_invoice_ids():
     )
     fields = extract_fields_from_raw_text(text)
     assert fields.get("bill_number") == "एफबी-१०२३६"
-    assert fields.get("invoice_number") == "आईएनवी-६२१"
+    assert fields.get("invoice_number") in (None, "")
 
 
 def test_translate_fields_for_display_converts_digits_without_saving():
@@ -198,6 +197,22 @@ def test_encode_images_for_groq_vision_makes_jpeg_data_url():
     assert len(urls[0]) < 200_000
 
 
+def test_encode_two_letter_pages_caps_edge_for_groq_token_limit():
+    import base64
+    import io
+    from PIL import Image
+    from app.ocr.groq_extractor import GROQ_VISION_MAX_IMAGES, encode_images_for_groq_vision
+
+    assert GROQ_VISION_MAX_IMAGES == 2
+    pages = [Image.new("RGB", (2550, 3300), "white") for _ in range(3)]
+    urls = encode_images_for_groq_vision(pages, max_pages=3, max_edge=1536)
+    assert len(urls) == 2
+    for url in urls:
+        raw = base64.b64decode(url.split(",", 1)[1])
+        encoded = Image.open(io.BytesIO(raw))
+        assert max(encoded.size) <= 1152
+
+
 def test_apply_vision_fields_reads_handwriting_and_drops_permit_invoice():
     from app.ocr.groq_extractor import apply_vision_fields
 
@@ -230,6 +245,27 @@ def test_apply_vision_fields_reads_handwriting_and_drops_permit_invoice():
     assert merged.get("origin") in (None, "")
     assert merged["bill_number"] == "16766-1"
     assert merged["line_items"][0]["tag"] == "4124"
+
+
+def test_apply_vision_fields_drops_letterhead_copied_into_consignor():
+    from app.ocr.groq_extractor import apply_vision_fields
+
+    base = {
+        "consignor": None,
+        "consignee": None,
+        "carrier": "CALIFORNIA MATERIALS, INC.",
+    }
+    vision = {
+        "consignor": "California Materials, Inc.",
+        "consignee": "Aquamarine Const.",
+        "carrier": "CALIFORNIA MATERIALS, INC.",
+        "bill_number": "9503-1",
+    }
+    merged = apply_vision_fields(base, vision)
+    assert merged.get("consignor") in (None, "")
+    assert "Aquamarine" in (merged.get("consignee") or "")
+    assert merged["carrier"] == "CALIFORNIA MATERIALS, INC."
+    assert merged["bill_number"] == "9503-1"
 
 
 def test_extract_fields_with_groq_vision_sends_image_url(monkeypatch):

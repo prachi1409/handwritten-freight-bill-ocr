@@ -224,6 +224,45 @@ def test_delete_document_removes_row_and_stored_file(client, db_session, tmp_pat
     assert missing.status_code == 404
 
 
+def test_delete_all_documents_removes_rows_and_files(client, db_session, tmp_path, monkeypatch):
+    """DELETE /api/v1/documents removes every document row and stored PDF."""
+    from app.core.config import settings
+
+    storage_dir = tmp_path / "storage" / "documents"
+    storage_dir.mkdir(parents=True)
+    monkeypatch.setattr(settings, "STORAGE_LOCATION", str(tmp_path / "storage"))
+
+    paths = []
+    for index in (1, 2):
+        pdf_path = storage_dir / f"to_delete_all_{index}.pdf"
+        pdf_path.write_bytes(make_valid_pdf_bytes(f"Delete All {index}"))
+        paths.append(pdf_path)
+        db_session.add(
+            Document(
+                original_filename=f"to_delete_all_{index}.pdf",
+                stored_filename=f"to_delete_all_{index}.pdf",
+                stored_path=str(pdf_path),
+                file_hash=f"hash_delete_all_{index}",
+                status=DocumentStatus.REVIEW,
+            )
+        )
+    db_session.commit()
+    assert db_session.query(Document).count() == 2
+
+    response = client.delete("/api/v1/documents")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["deleted_count"] == 2
+
+    db_session.expire_all()
+    assert db_session.query(Document).count() == 0
+    assert all(not path.exists() for path in paths)
+
+    empty = client.delete("/api/v1/documents")
+    assert empty.status_code == 200
+    assert empty.json()["deleted_count"] == 0
+
+
 def test_translate_endpoint_is_display_only(client, db_session):
     """POST /translate returns display values and does not rewrite extracted_data."""
     doc = Document(

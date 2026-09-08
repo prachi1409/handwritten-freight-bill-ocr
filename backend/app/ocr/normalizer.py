@@ -62,7 +62,6 @@ ALL_SCHEMA_FIELDS = (
 
 CRITICAL_FIELDS = (
     "bill_number",
-    "invoice_number",
     "consignor",
     "consignee",
     "origin",
@@ -116,10 +115,27 @@ def looks_like_ocr_junk(val: Any) -> bool:
     letters = re.sub(r"[^A-Za-z]", "", text)
     if 0 < len(letters) <= 3:
         return True
+    # CMAT MO/DAY/YR boxes glued onto a place (e.g. "YRZ5 Stockton Discavery Bay CA").
+    if re.match(r"^(?:YRZ?\d|YR\.?\s*\d|MO\.?\s*\d|DAY\.?\s*\d)", text, re.IGNORECASE):
+        return True
+    if re.match(r"^[A-Z]{2,4}\d+\s+[A-Za-z]", text):
+        return True
     tokens = re.findall(r"[A-Za-z]+", text)
     if not tokens:
         return False
     if len(tokens) >= 3 and all(len(t) <= 3 for t in tokens):
+        return True
+    if "/" in text and not re.search(
+        r"discovery|hooper|stockton|tracy|vernalis|palm|orwood|manteca",
+        text,
+        re.I,
+    ):
+        return True
+    if len(tokens) >= 4 and re.search(r"\d", text) and not re.search(
+        r"\b(st|rd|ave|ca|stockton|tracy|discovery|hooper|bay)\b",
+        text,
+        re.I,
+    ):
         return True
     for token in tokens:
         if len(token) <= 7:
@@ -251,6 +267,9 @@ def normalize_date(value: Optional[Any]) -> Optional[str]:
     val_str = str(value).strip()
     if not val_str or is_form_header_value(val_str):
         return None
+    # A lone month/day box (spatial "4") is not a calendar date.
+    if re.fullmatch(r"\d{1,2}", val_str):
+        return None
 
     match_slash = re.search(r"\b(\d{1,2})[/.-](\d{1,2})[/.-](\d{2,4})\b", val_str)
     if match_slash:
@@ -297,28 +316,68 @@ def normalize_date(value: Optional[Any]) -> Optional[str]:
     return None
 
 
+_BOXED_MO_RE = re.compile(r"\bMO\.?\s*(\d{1,2})\b", re.IGNORECASE)
+_BOXED_DAY_RE = re.compile(r"\bDAY\.?\s*(\d{1,2})\b", re.IGNORECASE)
+_BOXED_YR_RE = re.compile(r"\bYR\.?\s*(\d{2,4})\b", re.IGNORECASE)
+
+
+def _boxed_day_match(window: str) -> Optional[re.Match[str]]:
+    """Calendar DAY box only — never the CMAT JOB DAY ticket field."""
+    for match in _BOXED_DAY_RE.finditer(window):
+        prefix = window[max(0, match.start() - 16) : match.start()].upper()
+        if re.search(r"JOB\s*$", prefix.strip()):
+            continue
+        if prefix.rstrip().endswith("JOB"):
+            continue
+        return match
+    return None
+
+
+def _iso_from_boxed_parts(month: int, day_n: int, year: int) -> Optional[str]:
+    if year < 100:
+        year += 2000
+    try:
+        return datetime(year, month, day_n).strftime("%Y-%m-%d")
+    except ValueError:
+        return None
+
+
 def parse_boxed_month_day_year(raw_text: str) -> Optional[str]:
     """Parse form boxes like MO. 2  DAY 2  YR. 26 into YYYY-MM-DD.
 
-    Digits must sit near a YR box so JOB DAY 1105-2 is not treated as a day.
+    Digits must sit near a YR box (or a DATE header + year) so JOB DAY 1105-2
+    is not treated as a calendar day.
     """
     if not raw_text:
         return None
-    for yr_m in re.finditer(r"\bYR\.?\s*(\d{2,4})\b", raw_text, re.IGNORECASE):
+    for yr_m in _BOXED_YR_RE.finditer(raw_text):
         start = max(0, yr_m.start() - 160)
         end = min(len(raw_text), yr_m.end() + 160)
         window = raw_text[start:end]
-        mo = re.search(r"\bMO\.?\s*(\d{1,2})\b", window, re.IGNORECASE)
-        day = re.search(r"\bDAY\.?\s*(\d{1,2})\b", window, re.IGNORECASE)
+        mo = _BOXED_MO_RE.search(window)
+        day = _boxed_day_match(window)
         if not (mo and day):
             continue
-        month, day_n, year = int(mo.group(1)), int(day.group(1)), int(yr_m.group(1))
-        if year < 100:
-            year += 2000
-        try:
-            return datetime(year, month, day_n).strftime("%Y-%m-%d")
-        except ValueError:
+        hit = _iso_from_boxed_parts(int(mo.group(1)), int(day.group(1)), int(yr_m.group(1)))
+        if hit:
+            return hit
+    for date_m in re.finditer(r"\bDATE\b", raw_text, re.IGNORECASE):
+        window = raw_text[date_m.start() : min(len(raw_text), date_m.end() + 240)]
+        mo = _BOXED_MO_RE.search(window)
+        day = _boxed_day_match(window)
+        if not (mo and day):
             continue
+        yr = _BOXED_YR_RE.search(window)
+        year_n = int(yr.group(1)) if yr else None
+        if year_n is None:
+            year_hit = re.search(r"\b(20\d{2}|2[0-9])\b", window)
+            if year_hit:
+                year_n = int(year_hit.group(1))
+        if year_n is None:
+            continue
+        hit = _iso_from_boxed_parts(int(mo.group(1)), int(day.group(1)), year_n)
+        if hit:
+            return hit
     return None
 
 
@@ -538,7 +597,9 @@ def normalize_freight_data(
 
     for key in ALL_SCHEMA_FIELDS:
         val = source_data.get(key)
-        if key in ("bill_number", "invoice_number", "vehicle_number"):
+        if key == "invoice_number":
+            norm[key] = None
+        elif key in ("bill_number", "vehicle_number"):
             norm[key] = clean_identifier(val)
         elif key == "bill_date":
             norm[key] = normalize_date(val)

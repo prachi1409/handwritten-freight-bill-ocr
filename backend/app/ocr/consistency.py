@@ -6,9 +6,10 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
-from app.ocr.matching import _collapse
+from app.ocr.matching import _collapse, lookup_zip, parse_place
 from app.ocr.normalizer import normalize_currency
 from app.ocr.priors import associated_given, associated_pair, load_priors
+from app.ocr.zip_data import REGIONAL_ZIPS
 
 SEVERITY_ERROR = "error"
 SEVERITY_WARNING = "warning"
@@ -19,6 +20,16 @@ CODE_LINE_ITEM_SUM_MISMATCH = "LINE_ITEM_SUM_MISMATCH"
 CODE_LINE_ITEM_ARITHMETIC = "LINE_ITEM_QTY_RATE_AMOUNT_MISMATCH"
 CODE_NEGATIVE_VALUE = "NEGATIVE_VALUE"
 CODE_HISTORICAL_CONFLICT = "HISTORICAL_RELATIONSHIP_CONFLICT"
+CODE_ORIGIN_DEST_STATE_MISMATCH = "ORIGIN_DESTINATION_STATE_MISMATCH"
+CODE_DUPLICATE_TAG = "DUPLICATE_TAG"
+CODE_DUPLICATE_TAG_DATE = "DUPLICATE_TAG_DATE"
+
+_US_STATES = frozenset({
+    "AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA", "HI", "ID", "IL", "IN",
+    "IA", "KS", "KY", "LA", "ME", "MD", "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV",
+    "NH", "NJ", "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC", "SD", "TN",
+    "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC",
+})
 
 # Already turned into REVIEW strings by validate_extraction_data — do not duplicate.
 VALIDATE_OWNED_CODES = frozenset(
@@ -446,11 +457,127 @@ def _check_historical(data: Dict[str, Any], priors: Optional[Dict[str, Any]]) ->
     return findings
 
 
+def _state_from_place(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return None
+    zip_code = parse_place(raw).get("zip")
+    if zip_code:
+        city_state = lookup_zip(zip_code)
+        if city_state:
+            return str(city_state[1]).upper()
+    comma = re.search(r",\s*([A-Za-z]{2})\b", raw)
+    if comma and comma.group(1).upper() in _US_STATES:
+        return comma.group(1).upper()
+    collapsed = _collapse(raw)
+    for _zip_code, (city, state) in REGIONAL_ZIPS.items():
+        city_key = _collapse(city)
+        if city_key and len(city_key) >= 5 and city_key in collapsed:
+            return str(state).upper()
+    return None
+
+
+def _check_origin_destination_state(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    origin = data.get("origin")
+    destination = data.get("destination")
+    if not _has_text(origin) or not _has_text(destination):
+        return []
+    origin_state = _state_from_place(origin)
+    dest_state = _state_from_place(destination)
+    if not origin_state or not dest_state or origin_state == dest_state:
+        return []
+    return [
+        _finding(
+            CODE_ORIGIN_DEST_STATE_MISMATCH,
+            SEVERITY_WARNING,
+            f"Origin state ({origin_state}) does not match destination state ({dest_state}).",
+            ("origin", "destination"),
+            {
+                "origin": origin,
+                "destination": destination,
+                "origin_state": origin_state,
+                "destination_state": dest_state,
+            },
+            expected_relationship="origin state compatible with destination state",
+        )
+    ]
+
+
+def _line_item_tags(data: Dict[str, Any]) -> List[str]:
+    tags: List[str] = []
+    for item in data.get("line_items") or []:
+        if not isinstance(item, dict):
+            continue
+        tag = str(item.get("tag") or "").strip()
+        if tag:
+            tags.append(tag)
+    return tags
+
+
+def _check_duplicate_tags(
+    data: Dict[str, Any],
+    peer_tickets: Optional[Sequence[Dict[str, Any]]] = None,
+) -> List[Dict[str, Any]]:
+    findings: List[Dict[str, Any]] = []
+    tags = _line_item_tags(data)
+    seen: Dict[str, int] = {}
+    for tag in tags:
+        key = tag.lower()
+        seen[key] = seen.get(key, 0) + 1
+    dupes = sorted({tag for tag in tags if seen.get(tag.lower(), 0) > 1})
+    if dupes:
+        findings.append(
+            _finding(
+                CODE_DUPLICATE_TAG,
+                SEVERITY_WARNING,
+                f"Duplicate tag number(s) on this bill: {', '.join(dupes)}.",
+                ("line_items",),
+                {"tags": dupes},
+                expected_relationship="tag numbers unique within a bill",
+            )
+        )
+
+    consignee = _collapse(str(data.get("consignee") or ""))
+    bill_date = str(data.get("bill_date") or "").strip()
+    if not consignee or not bill_date or not tags:
+        return findings
+    tag_set = {tag.lower() for tag in tags}
+    for peer in peer_tickets or []:
+        if not isinstance(peer, dict):
+            continue
+        if _collapse(str(peer.get("consignee") or "")) != consignee:
+            continue
+        if str(peer.get("bill_date") or "").strip() != bill_date:
+            continue
+        peer_tags = [str(t).strip() for t in (peer.get("tags") or []) if str(t).strip()]
+        overlap = sorted({t for t in peer_tags if t.lower() in tag_set})
+        if not overlap:
+            continue
+        findings.append(
+            _finding(
+                CODE_DUPLICATE_TAG_DATE,
+                SEVERITY_WARNING,
+                f"Tag {', '.join(overlap)} already appears for this consignee on {bill_date}.",
+                ("line_items", "bill_date", "consignee"),
+                {
+                    "tags": overlap,
+                    "bill_date": bill_date,
+                    "consignee": data.get("consignee"),
+                    "peer_document_id": peer.get("document_id"),
+                },
+                expected_relationship="tag+date unique within a customer",
+            )
+        )
+        break
+    return findings
+
+
 def check_bill_consistency(
     extracted_data: Optional[Dict[str, Any]],
     metadata: Optional[Dict[str, Any]] = None,
     *,
     priors: Optional[Dict[str, Any]] = None,
+    peer_tickets: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Return structured consistency findings. Does not mutate extracted field values."""
     data = extracted_data if isinstance(extracted_data, dict) else {}
@@ -459,6 +586,8 @@ def check_bill_consistency(
     checks.extend(_check_freight_vs_total(data))
     checks.extend(_check_line_items(data))
     checks.extend(_check_negative_values(data))
+    checks.extend(_check_origin_destination_state(data))
+    checks.extend(_check_duplicate_tags(data, peer_tickets))
     checks.extend(_check_historical(data, priors))
     return {
         "checks": checks,
@@ -510,12 +639,14 @@ def attach_consistency_checks(
     raw_ocr: Optional[Dict[str, Any]] = None,
     *,
     priors: Optional[Dict[str, Any]] = None,
+    peer_tickets: Optional[Sequence[Dict[str, Any]]] = None,
 ) -> Dict[str, Any]:
     """Write structured findings beside extraction results. Never changes field values."""
     payload = check_bill_consistency(
         extracted,
         metadata=raw_ocr if isinstance(raw_ocr, dict) else None,
         priors=priors,
+        peer_tickets=peer_tickets,
     )
     snapshot = dict(extracted) if isinstance(extracted, dict) else {}
     payload["extracted_snapshot_unchanged"] = True
@@ -532,6 +663,8 @@ def attach_consistency_checks(
             "driver_name",
             "origin",
             "destination",
+            "commodity_description",
+            "vehicle_number",
             "freight_amount",
             "total_amount",
         ):

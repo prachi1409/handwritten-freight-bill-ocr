@@ -40,10 +40,22 @@ function ConfidenceBlock({ calibration, heuristic }) {
     );
   }
 
+  const threshold = calibration && calibration.threshold;
+  const previewMeets = raw != null && threshold != null && Number(raw) >= Number(threshold);
   return (
     <div className="reviewer-conf" data-testid="confidence-heuristic">
       <div className="reviewer-meta-label">Confidence</div>
       <div>Heuristic: {formatScore(raw)}</div>
+      {threshold != null && (
+        <div>Auto-post threshold: {formatScore(threshold)} (not fitted yet)</div>
+      )}
+      {threshold != null && (
+        <div className="reviewer-muted">
+          {previewMeets
+            ? "Heuristic is at/above threshold; bill status still uses whole-ticket rules"
+            : "Heuristic is below threshold; stays in review until calibrated"}
+        </div>
+      )}
       <div className="reviewer-muted">Calibration: Not available yet</div>
     </div>
   );

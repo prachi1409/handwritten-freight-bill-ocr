@@ -226,10 +226,52 @@ def test_matched_context_fields_drive_prior_lookup():
     assert "Gerald Valentin" in _values(rows)
 
 
+def test_ocr_stub_still_injects_route_priors():
+    priors = empty_priors()
+    observe_reviewed_ticket(
+        {
+            "carrier": "CALIFORNIA MATERIALS, INC.",
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+        },
+        document_id="gold-1",
+        priors=priors,
+    )
+    rows = generate_field_candidates(
+        {
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aaua",
+            "carrier": "CALIFORNIA MATERIALS, INC.",
+        },
+        gazetteer=GAZ,
+        memory=_memory(),
+        priors=priors,
+    )["consignee"]
+    assert "Aquamarine Contractors Inc." in _values(rows)
+
+
 def test_one_best_gazetteer_matching_unchanged():
     out = apply_entity_matching({"consignor": "CleanPlanet", "driver_name": "207855"})
-    assert out["consignor"] == "Clean Planet"
+    assert out["consignor"] == "Clean Planet Hooper"
     assert out["driver_name"] == "207855"
     generate_field_candidates({"consignor": "CleanPlanet"}, gazetteer=GAZ, memory=_memory(), priors=empty_priors())
     out2 = apply_entity_matching({"consignor": "CleanPlanet"})
-    assert out2["consignor"] == "Clean Planet"
+    assert out2["consignor"] == "Clean Planet Hooper"
+
+
+def test_letterhead_in_page_text_is_not_a_consignor_candidate():
+    gaz = {
+        **GAZ,
+        "consignor": [*GAZ["consignor"], "California Materials, Inc."],
+    }
+    mem = _memory()
+    mem["names"] = {k: list(v) for k, v in gaz.items()}
+    rows = generate_field_candidates(
+        {"consignor": None, "carrier": "CALIFORNIA MATERIALS, INC."},
+        gazetteer=gaz,
+        memory=mem,
+        priors=empty_priors(),
+        raw_text="CALIFORNIA MATERIALS, INC.\nAGGREGATES • TRUCKING\nSTOCKTON, CA",
+    )["consignor"]
+    names = {str(row["value"]).lower() for row in rows}
+    assert not any("california materials" in name for name in names)

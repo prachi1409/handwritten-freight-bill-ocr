@@ -42,7 +42,7 @@ Rules:
 - For bill_number / invoice_number written in Devanagari (e.g. एफबी-१०२३६, आईएनवी-६२१), transliterate to Latin IDs (FB-10236, INV-621). Do not leave those fields empty.
 - Never copy printed form labels as values (ADDRESS, SHIPPER, CONSIGNEE, SUB-HAUL, TAG NUMBER, POINT OF ORIGIN, POINT OF DESTINATION, DATE, WEIGHT). If the next line is the real value, use that.
 - Shipper maps to consignor. Receiver maps to consignee. Never put the same string in consignor and consignee.
-- Ticket / "No. 16766-1" maps to bill_number, not invoice_number, unless the label is invoice.
+- Ticket / "No. 16766-1" maps to bill_number. Leave invoice_number empty; bill_number is the only ticket id.
 - Compact times like 930 or 1020 mean 9:30 and 10:20.
 - If a table has several load rows, put each in line_items (tag, weight, load_arrive, load_depart, unload_arrive, unload_depart). Header pickup_time is the first load arrived; delivery_time is the last unload departed.
 - Weight must be a single number (optionally with lbs). If a row glues weight and clock times (e.g. 27.02 5:20 5:27), put 27.02 in weight.
@@ -58,12 +58,15 @@ special_instructions, driver_signature, consignee_signature, received_datetime, 
 Rules:
 - Read handwritten ink, not only printed headers.
 - The company in the letterhead (e.g. CALIFORNIA MATERIALS, INC.) is the carrier, not the shipper.
-- Permit / MC / CA numbers (e.g. CA0385520) are not invoice_number.
-- Ticket "No. 16766-1" is bill_number, not invoice_number, unless the label says invoice.
+- Permit / MC / CA numbers (e.g. CA0385520) are not identifiers for this form.
+- Ticket "No. 16766-1" is bill_number. Leave invoice_number empty.
+- CMAT date boxes are MO / DAY / YR (not JOB DAY). Example: MO 4, DAY 30, YR 25 → bill_date 2025-04-30.
+- TRUCK NO. / TRUCK NUMBER is vehicle_number (not MILES, not the CA permit).
+- Handwritten IMPORT / FILL / ImPor+Fill is commodity_description "Import Fill".
 - Shipper / sub-hauler → consignor. Consignee / receiver is a different party. Never copy the same string into both.
 - Compact times like 930 or 1020 mean 9:30 and 10:20.
 - Tagline text such as AGGREGATES TRUCKING is not the carrier legal name if a company name with INC/LLC is on the page.
-- If a table has load rows, put each in line_items (tag, weight, load_arrive, load_depart, unload_arrive, unload_depart). Header pickup_time is first load in; delivery_time is last unload out.
+- If a table has load rows, put EACH handwritten row in line_items (tag, weight, load_arrive, load_depart, unload_arrive, unload_depart). Do not stop at the first row. Header pickup_time is first load in; delivery_time is last unload out.
 - Empty string when you cannot read a value. Do not invent. Do not copy printed labels (SHIPPER, ADDRESS, POINT OF ORIGIN).
 """
 
@@ -71,6 +74,10 @@ _VISION_FALLBACK_MODELS = (
     "qwen/qwen3.6-27b",
     "qwen/qwen3.8-27b",
 )
+# Qwen on Groq bills 2048 input tokens per image. On-demand ITPM is 7000, so
+# two images + prompt fits; three images request ~7070 and 413.
+GROQ_VISION_MAX_IMAGES = 2
+_VISION_EDGE_CAP_BY_COUNT = {1: 1536, 2: 1152}
 
 _PERMIT_ID_RE = re.compile(r"^CA\d{5,}$", re.IGNORECASE)
 
@@ -184,6 +191,8 @@ def apply_llm_fields(base: Dict[str, Any], llm_fields: Dict[str, Any]) -> Dict[s
             if isinstance(val, list) and val and not merged.get("line_items"):
                 merged["line_items"] = val
             continue
+        if key == "invoice_number":
+            continue
         if not _llm_value_is_empty(val):
             if isinstance(val, str) and is_form_header_value(val):
                 continue
@@ -204,8 +213,15 @@ def apply_llm_fields(base: Dict[str, Any], llm_fields: Dict[str, Any]) -> Dict[s
             merged[key] = val
     ship = re.sub(r"[^a-z0-9]+", "", str(merged.get("consignor") or "").lower())
     recv = re.sub(r"[^a-z0-9]+", "", str(merged.get("consignee") or "").lower())
+    haul = re.sub(r"[^a-z0-9]+", "", str(merged.get("carrier") or "").lower())
     if ship and recv and ship == recv:
         merged["consignee"] = None
+    if ship and haul and ship == haul:
+        merged["consignor"] = None
+    recv = re.sub(r"[^a-z0-9]+", "", str(merged.get("consignee") or "").lower())
+    if recv and haul and recv == haul:
+        merged["consignee"] = None
+    merged["invoice_number"] = None
     return merged
 
 
@@ -233,8 +249,11 @@ def apply_vision_fields(base: Dict[str, Any], vision_fields: Dict[str, Any]) -> 
             merged[key] = None
     ship = re.sub(r"[^a-z0-9]+", "", str(merged.get("consignor") or "").lower())
     haul = re.sub(r"[^a-z0-9]+", "", str(merged.get("carrier") or "").lower())
-    if ship and haul and ship == haul and _llm_value_is_empty(vision_fields.get("consignor")):
+    recv = re.sub(r"[^a-z0-9]+", "", str(merged.get("consignee") or "").lower())
+    if ship and haul and ship == haul:
         merged["consignor"] = None
+    if recv and haul and recv == haul:
+        merged["consignee"] = None
     origin_key = re.sub(r"[^a-z0-9]+", "", str(merged.get("origin") or "").lower())
     if (
         origin_key
@@ -253,17 +272,19 @@ def encode_images_for_groq_vision(
     max_pages: Optional[int] = None,
     max_edge: Optional[int] = None,
 ) -> List[str]:
-    """JPEG data URLs small enough for Groq vision (max 5 images, ~20MB request)."""
+    """JPEG data URLs small enough for Groq vision (max 2 images under 7000 ITPM)."""
     from PIL import Image
 
     if not page_images:
         return []
     pages = int(max_pages if max_pages is not None else getattr(settings, "GROQ_VISION_MAX_PAGES", 2) or 2)
-    edge = int(max_edge if max_edge is not None else getattr(settings, "GROQ_VISION_MAX_EDGE", 1536) or 1536)
-    pages = max(1, min(5, pages))
-    edge = max(640, min(2048, edge))
+    requested = int(max_edge if max_edge is not None else getattr(settings, "GROQ_VISION_MAX_EDGE", 1024) or 1024)
+    pages = max(1, min(GROQ_VISION_MAX_IMAGES, pages))
+    incoming = [img for img in list(page_images)[:pages] if img is not None]
+    cap = _VISION_EDGE_CAP_BY_COUNT.get(len(incoming), 1152)
+    edge = max(640, min(2048, requested, cap))
     urls: List[str] = []
-    for img in list(page_images)[:pages]:
+    for img in incoming:
         if img is None:
             continue
         rgb = img.convert("RGB")
@@ -456,7 +477,11 @@ def extract_fields_with_groq_vision(
     if not api_key:
         logger.info("Groq vision skipped: GROQ_API_KEY is empty")
         return None
-    data_urls = encode_images_for_groq_vision(page_images)
+    incoming = [img for img in list(page_images or []) if img is not None]
+    data_urls = encode_images_for_groq_vision(
+        incoming,
+        max_pages=min(GROQ_VISION_MAX_IMAGES, max(1, len(incoming))),
+    )
     if not data_urls:
         logger.info("Groq vision skipped: no page images")
         return None

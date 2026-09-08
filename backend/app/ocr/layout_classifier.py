@@ -85,6 +85,7 @@ def unknown_classification(
         "method": METHOD_DETERMINISTIC,
         "evidence": list(evidence or ["weak_or_ambiguous"]),
         "features": features or {},
+        "field_regions": {},
         "error": error,
     }
 
@@ -195,6 +196,52 @@ def _column_row_counts(
 
 def _clip(value: float, low: float = 0.0, high: float = 1.0) -> float:
     return round(min(high, max(low, value)), 2)
+
+
+def collect_field_regions(
+    spatial_items: Optional[Sequence[Dict[str, Any]]] = None,
+    *,
+    page_width: float = 0.0,
+    page_height: float = 0.0,
+) -> Dict[str, Dict[str, Any]]:
+    """Label-anchored value bands. Metadata only — not an extractor."""
+    from app.ocr.spatial_extractor import LABEL_PATTERNS
+
+    regions: Dict[str, Dict[str, Any]] = {}
+    width = float(page_width or 0.0)
+    height = float(page_height or 0.0)
+    for item in spatial_items or []:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text") or "").strip()
+        bbox = item.get("bbox") or []
+        if not text or len(bbox) < 4:
+            continue
+        matched = None
+        for key, patterns in LABEL_PATTERNS.items():
+            if any(re.search(pat, text, re.IGNORECASE) for pat in patterns):
+                matched = key
+                break
+        if not matched or matched in regions:
+            continue
+        min_x, min_y, max_x, max_y = [float(v) for v in bbox[:4]]
+        band = max(float(max_y - min_y) * 4.0, 180.0)
+        value_box = [
+            round(min_x, 1),
+            round(min_y, 1),
+            round(max_x + max(float(max_x - min_x), 80.0), 1),
+            round(max_y + band, 1),
+        ]
+        if width > 0:
+            value_box[2] = min(value_box[2], width)
+        if height > 0:
+            value_box[3] = min(value_box[3], height)
+        regions[matched] = {
+            "bbox": value_box,
+            "source": "spatial_label",
+            "label_text": text,
+        }
+    return regions
 
 
 def classify_document_layout(
@@ -356,6 +403,7 @@ def classify_document_layout(
         "method": METHOD_DETERMINISTIC,
         "evidence": evidence,
         "features": features,
+        "field_regions": collect_field_regions(spatial, page_width=page_width, page_height=page_height),
         "error": None,
     }
 

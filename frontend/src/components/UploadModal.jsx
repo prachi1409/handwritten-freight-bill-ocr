@@ -55,16 +55,23 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
   };
 
   return (
-    <div className="modal-overlay">
-      <div className="modal-card">
+    <div
+      className="modal-overlay"
+      onClick={() => {
+        if (!isUploading) onClose();
+      }}
+    >
+      <div className="modal-card" onClick={(event) => event.stopPropagation()}>
         <div className="modal-header">
-          <h3 style={{ fontWeight: 600, fontSize: '1.125rem' }}>Upload Freight Bill</h3>
-          <button 
-            onClick={onClose} 
+          <h3 className="modal-title">Upload freight bill</h3>
+          <button
+            type="button"
+            className="modal-close"
+            onClick={onClose}
             disabled={isUploading}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#64748b' }}
+            aria-label="Close"
           >
-            <X size={20} />
+            <X size={18} />
           </button>
         </div>
 
@@ -106,7 +113,7 @@ export default function UploadModal({ isOpen, onClose, onUploadSuccess }) {
           </div>
         </div>
 
-        <div style={{ padding: '1rem 1.5rem', borderTop: '1px solid #e2e8f0', display: 'flex', justifyContent: 'flex-end', gap: '0.75rem', backgroundColor: '#f8fafc' }}>
+        <div className="modal-footer">
           <button className="btn btn-secondary" onClick={onClose} disabled={isUploading}>
             Cancel
           </button>

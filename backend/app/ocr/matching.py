@@ -35,9 +35,9 @@ SEED_GAZETTEER: Dict[str, List[str]] = {
     "consignor": [
         "Clean Planet",
         "Clean Planet Hooper",
+        "C.P.I. Hooper",
         "Bell Marine",
         "Granite Vernalis",
-        "California Materials, Inc.",
     ],
     "consignee": [
         "Aquamarine",
@@ -53,6 +53,7 @@ SEED_GAZETTEER: Dict[str, List[str]] = {
     "origin": [
         "North Hooper",
         "N. Hooper St.",
+        "W. Hooper St.",
         "Stockton, CA",
         "Vernalis, CA",
     ],
@@ -60,6 +61,8 @@ SEED_GAZETTEER: Dict[str, List[str]] = {
         "Discovery Bay",
         "Discovery Bay, CA",
         "Tracy, CA",
+        "Palm Wood",
+        "Palm Orwood Tract",
     ],
     "driver_signature": [
         "Isaac Cordero",
@@ -79,6 +82,31 @@ SEED_STREETS_BY_CITY: Dict[str, List[str]] = {
     "discovery bay": ["Orwood Rd"],
     "vernalis": ["Vernalis Rd"],
     "tracy": ["W. Linne Rd", "Linne Rd"],
+}
+
+# OCR abbreviations and near-misses that should not wait for a Review save.
+SEED_ALIASES: Dict[str, Dict[str, str]] = {
+    "consignor": {
+        "cpihooper": "Clean Planet Hooper",
+        "cleanplanet": "Clean Planet Hooper",
+        "crimplanet": "Clean Planet Hooper",
+        "crimplanethooper": "Clean Planet Hooper",
+        "oceanplanet": "Clean Planet Hooper",
+        "grandplanethooper": "Clean Planet Hooper",
+    },
+    "consignee": {
+        "aguamarene": "Aquamarine",
+        "aquamarine": "Aquamarine",
+        "pauumeine": "Aquamarine",
+        "pauumeinecons": "Aquamarine",
+    },
+    "origin": {
+        "noenhouper": "North Hooper",
+        "vhosper": "W. Hooper St.",
+        "whosper": "W. Hooper St.",
+        "hosper": "W. Hooper St.",
+        "nhesper": "N. Hooper St.",
+    },
 }
 
 _ID_CONFUSION = str.maketrans({
@@ -131,9 +159,12 @@ def _copy_name_lists(src: Dict[str, List[str]]) -> Dict[str, List[str]]:
 
 
 def _empty_memory() -> Dict[str, Any]:
+    aliases = {key: {} for key in NAME_FIELDS}
+    for key, mapping in SEED_ALIASES.items():
+        aliases.setdefault(key, {}).update(mapping)
     return {
         "names": _copy_name_lists(SEED_GAZETTEER),
-        "aliases": {key: {} for key in NAME_FIELDS},
+        "aliases": aliases,
         "streets_by_zip": {k: list(v) for k, v in SEED_STREETS_BY_ZIP.items()},
         "streets_by_city": {k: list(v) for k, v in SEED_STREETS_BY_CITY.items()},
         "learned_zips": {},
@@ -193,6 +224,14 @@ def load_matching_memory() -> Dict[str, Any]:
             for zip_code, city_state in (payload.get("learned_zips") or {}).items():
                 if isinstance(city_state, (list, tuple)) and len(city_state) >= 2:
                     memory["learned_zips"][str(zip_code)] = (str(city_state[0]), str(city_state[1]))
+    carrier_keys = {_collapse(n) for n in (memory["names"].get("carrier") or [])}
+    carrier_keys |= {_collapse(n) for n in (SEED_GAZETTEER.get("carrier") or [])}
+    carrier_keys.discard("")
+    for field in ("consignor", "consignee"):
+        memory["names"][field] = [
+            name for name in (memory["names"].get(field) or [])
+            if _collapse(name) not in carrier_keys
+        ]
     _memory_cache = memory
     return memory
 
@@ -241,11 +280,100 @@ def add_gazetteer_value(field: str, value: str, gazetteer: Optional[Dict[str, Li
     item = str(value or "").strip()
     if not _is_harvestable_name(field, item):
         return gaz
+    if is_letterhead_as_party(field, item, gazetteer=gaz):
+        return gaz
+    if field == "consignor":
+        col = _collapse(item)
+        if col.endswith("planet") and col != _collapse("Clean Planet Hooper"):
+            return gaz
     bucket = gaz.setdefault(field, [])
     col = _collapse(item)
     if col and col not in {_collapse(v) for v in bucket}:
         bucket.append(item)
     return gaz
+
+
+PARTY_STUB_FIELDS = frozenset({"consignor", "consignee", "driver_name"})
+PLACE_STUB_FIELDS = frozenset({"origin", "destination"})
+LETTERHEAD_PARTY_FIELDS = frozenset({"consignor", "consignee"})
+
+
+def collapsed_carrier_names(
+    carrier: Any = None,
+    gazetteer: Optional[Dict[str, List[str]]] = None,
+) -> set:
+    keys = {_collapse(name) for name in (SEED_GAZETTEER.get("carrier") or [])}
+    if gazetteer:
+        keys |= {_collapse(name) for name in (gazetteer.get("carrier") or [])}
+    if carrier:
+        keys.add(_collapse(str(carrier)))
+    keys.discard("")
+    return keys
+
+
+def is_letterhead_as_party(
+    field: str,
+    value: Any,
+    *,
+    carrier: Any = None,
+    gazetteer: Optional[Dict[str, List[str]]] = None,
+) -> bool:
+    """True when a party field was filled with the printed carrier / letterhead."""
+    if field not in LETTERHEAD_PARTY_FIELDS:
+        return False
+    col = _collapse(str(value or ""))
+    return bool(col) and col in collapsed_carrier_names(carrier, gazetteer)
+
+
+def clear_letterhead_as_party(
+    fields: Optional[Dict[str, Any]],
+    gazetteer: Optional[Dict[str, List[str]]] = None,
+) -> Dict[str, Any]:
+    """Leave shipper/receiver empty when they duplicate the hauler letterhead."""
+    out = dict(fields or {})
+    carrier = out.get("carrier")
+    for field in LETTERHEAD_PARTY_FIELDS:
+        if is_letterhead_as_party(field, out.get(field), carrier=carrier, gazetteer=gazetteer):
+            out[field] = None
+    return out
+
+
+def is_weak_entity_stub(field: str, value: Any) -> bool:
+    """True for OCR fragments that must not lock extraction (e.g. 'clean', 'Aaua').
+
+    Only party/place names are stubs. IDs, amounts, and carrier codes stay as-is.
+    Letterhead copied into consignor/consignee is also weak so Vision can replace it.
+    """
+    if field not in PARTY_STUB_FIELDS and field not in PLACE_STUB_FIELDS:
+        return False
+    text = str(value or "").strip()
+    if not text:
+        return True
+    if not _is_harvestable_name(field, text):
+        return True
+    if is_letterhead_as_party(field, text):
+        return True
+    letters = re.sub(r"[^A-Za-z]", "", text)
+    if field in PARTY_STUB_FIELDS:
+        return len(letters) < 6
+    if field in PLACE_STUB_FIELDS:
+        if len(letters) < 5:
+            return True
+        if match_gazetteer_name(text, SEED_GAZETTEER.get(field) or [], min_ratio=0.80):
+            return False
+        if re.search(r"\b\d{5}\b", text):
+            return False
+        if re.search(
+            r"\b(st|street|rd|road|ave|ca|stockton|tracy|discovery|vernalis|manteca|lathrop|hooper)\b",
+            text,
+            re.I,
+        ):
+            return False
+        tokens = re.findall(r"[A-Za-z]+", text)
+        if len(tokens) == 1 and letters.isalpha() and len(letters) >= 6:
+            return False
+        return True
+    return False
 
 
 def _is_harvestable_name(field: str, value: str) -> bool:
@@ -319,8 +447,21 @@ def match_gazetteer_name(
     best_score = 0.0
     variants = name_variants(text)
     for cand in candidates:
+        first_word = re.split(r"[,\s]+", str(cand).strip())[0]
         for variant in variants:
             score = similarity(variant, cand)
+            # Typo of the first word only (Discavery ≈ Discovery). Exact
+            # "STOCKTON" must not expand into "STOCKTON N. HOPPER ST".
+            if len(_collapse(variant)) >= 6 and len(_collapse(first_word)) >= 6:
+                token_score = similarity(variant, first_word)
+                if 0.86 <= token_score < 0.999:
+                    score = max(score, token_score)
+                else:
+                    for tok in re.findall(r"[A-Za-z]{6,}", variant):
+                        tok_score = similarity(tok, first_word)
+                        if 0.82 <= tok_score < 0.999:
+                            # DTSCOVER ≈ Discovery: token ratio sits just under min_ratio.
+                            score = max(score, max(tok_score, 0.88))
             if score > best_score or (
                 score == best_score and best_name and len(_collapse(cand)) > len(_collapse(best_name))
             ):
@@ -332,7 +473,39 @@ def match_gazetteer_name(
     # Keep a longer, more specific OCR string (Clean Planet Hooper) instead of shrinking it.
     if hit_c and hit_c in ocr_c and len(ocr_c) > len(hit_c) + 2:
         return None
+    # Keep a complete short place (STOCKTON) instead of expanding into a street.
+    if ocr_c and ocr_c != hit_c and ocr_c in hit_c and len(hit_c) > len(ocr_c) + 2:
+        exact = next((c for c in candidates if _collapse(c) == ocr_c), None)
+        if exact:
+            return exact
+        city = next(
+            (c for c in candidates if "," in str(c) and _collapse(c).startswith(ocr_c)),
+            None,
+        )
+        if city:
+            return city
+        return None
     return best_name
+
+
+def is_gazetteer_near_miss(
+    field: str,
+    value: Any,
+    candidates: Optional[Iterable[str]] = None,
+    *,
+    min_ratio: float = 0.80,
+) -> bool:
+    """True when OCR is close to a known name but not the same string (Discavery vs Discovery Bay)."""
+    if field not in PARTY_STUB_FIELDS and field not in PLACE_STUB_FIELDS:
+        return False
+    text = str(value or "").strip()
+    if not text:
+        return False
+    pool = list(candidates) if candidates is not None else (load_gazetteer().get(field) or [])
+    hit = match_gazetteer_name(text, pool, min_ratio=min_ratio)
+    if not hit:
+        return False
+    return _collapse(hit) != _collapse(text)
 
 
 def resolve_alias(field: str, value: Any, aliases: Optional[Dict[str, Dict[str, str]]] = None) -> Optional[str]:
@@ -344,6 +517,12 @@ def resolve_alias(field: str, value: Any, aliases: Optional[Dict[str, Dict[str, 
         hit = table.get(_collapse(variant))
         if hit:
             return hit
+    col = _collapse(text)
+    if field == "consignor":
+        if "planethooper" in col and col != _collapse("Clean Planet Hooper"):
+            return "Clean Planet Hooper"
+        if col.endswith("planet") and len(col) >= 8:
+            return "Clean Planet Hooper"
     return None
 
 
@@ -423,6 +602,8 @@ def apply_street_hints(
             continue
         parsed = parse_place(raw)
         zip_code = parsed["zip"]
+        if not parsed["street"] and not _STREET_RE.search(raw):
+            continue
         candidates: List[str] = []
         city = state = None
         if zip_code:
@@ -480,7 +661,8 @@ def apply_entity_matching(
             logger.info("Gazetteer matched %s: %r -> %r", key, raw, hit)
             out[key] = hit
     out = apply_zip_hints(out, mem.get("learned_zips") or {})
-    return apply_street_hints(out, mem)
+    out = apply_street_hints(out, mem)
+    return clear_letterhead_as_party(out, gaz)
 
 
 def _add_street(memory: Dict[str, Any], street: str, zip_code: Optional[str], city: Optional[str]) -> bool:
@@ -519,6 +701,8 @@ def merge_gold_records(
                 if not _is_harvestable_name(key, value):
                     continue
             elif not _trusted_uncorrected(key, value):
+                continue
+            if is_letterhead_as_party(key, value, carrier=data.get("carrier"), gazetteer=mem.get("names")):
                 continue
             _merge_string_list(mem["names"].setdefault(key, []), [value])
         for key in PLACE_FIELDS:

@@ -332,11 +332,113 @@ def recover_aggregate_commodity(raw_text: str) -> Dict[str, Any]:
             word = word.title()
         out["quantity"] = qty
         out["commodity_description"] = f"{qty} x {size} {word}"
+    if not out.get("commodity_description"):
+        fill = recover_import_fill(raw_text)
+        if fill:
+            out["commodity_description"] = fill
     return out
+
+
+def recover_import_fill(raw_text: str) -> Optional[str]:
+    """CMAT handwriting often lands as ImPor+Fill / 1.ImPor+Fill / 1.TMPORT + FILL."""
+    if not raw_text:
+        return None
+    if re.search(
+        r"im\s*por\s*[t+]?\s*fill"
+        r"|import\s*fill"
+        r"|t?mport\s*fill"
+        r"|\b1\.?\s*t?mport\b"
+        r"|\btmport\b",
+        raw_text,
+        re.IGNORECASE,
+    ):
+        return "Import Fill"
+    if re.search(r"\bt?mport\b|\bimport\b", raw_text, re.IGNORECASE) and re.search(
+        r"(?:^|\n)\s*fill\s*(?:\n|$)", raw_text, re.IGNORECASE
+    ):
+        return "Import Fill"
+    return None
+
+
+def recover_table_commodity(raw_text: str) -> Optional[str]:
+    """Named table commodities (Dirt) when the spatial grab was a row number."""
+    fill = recover_import_fill(raw_text)
+    if fill:
+        return fill
+    if not raw_text:
+        return None
+    line = re.search(r"(?im)^\s*(Dirt|Rock|Gravel|Sand)\s*$", raw_text)
+    if line:
+        return line.group(1).title()
+    labeled = re.search(
+        r"(?i)(?:commodity|load|description)\s*[:#.]?\s*(Dirt|Rock|Gravel|Sand)\b",
+        raw_text,
+    )
+    if labeled:
+        return labeled.group(1).title()
+    return None
+
+
+_TRUCK_LABEL_RE = re.compile(
+    r"(?:vehicle\s*(?:number|no\.?)|truck\s*(?:number|no\.?)|truckno\.?)",
+    re.IGNORECASE,
+)
+_TRUCK_SKIP_RE = re.compile(
+    r"miles|hours|license|trailer|axle|length|tonnage|hourly",
+    re.IGNORECASE,
+)
+
+
+def extract_truck_number(raw_text: str) -> Optional[str]:
+    """Value under TRUCK NO. / TRUCK NUMBER, skipping MILES and fleet stamps."""
+    if not raw_text:
+        return None
+    match = _TRUCK_LABEL_RE.search(raw_text)
+    if not match:
+        return None
+    remainder = raw_text[match.end():]
+    first = remainder.splitlines()[0].strip() if remainder else ""
+    lines = [first] if first else []
+    lines.extend(ln.strip() for ln in remainder.splitlines()[1:] if ln.strip())
+    for cand in lines[:8]:
+        if is_form_header_value(cand):
+            continue
+        if _TRUCK_SKIP_RE.search(cand) and not re.search(r"\d", cand):
+            continue
+        if re.fullmatch(r"CMAT", cand, re.IGNORECASE):
+            continue
+        compact = re.sub(r"\D", "", cand)
+        if len(compact) >= 5:
+            continue
+        if not re.search(r"\d", cand):
+            continue
+        unit = re.search(r"\b(\d{1,4}[A-Za-z]?)\b", cand)
+        if unit and not re.search(r"\d{5,}", unit.group(1)):
+            return unit.group(1)
+        if len(cand) <= 12:
+            return cand
+    return None
 
 
 def pick_extracted_value(field: str, spatial_val: Any, text_val: Any) -> Any:
     """Prefer regex when spatial grabbed a weak token (CMa+) or a form header."""
+    if field == "commodity_description":
+        recovered = recover_table_commodity(str(text_val or "")) or recover_table_commodity(str(spatial_val or ""))
+        if recovered:
+            return recovered
+        if spatial_val and re.fullmatch(r"\d{1,2}\.?", str(spatial_val).strip()):
+            spatial_val = None
+        if text_val and re.fullmatch(r"\d{1,2}\.?", str(text_val).strip()):
+            text_val = None
+    if field == "vehicle_number":
+        if spatial_val and (
+            not re.search(r"\d", str(spatial_val)) or re.search(r"miles|hours", str(spatial_val), re.IGNORECASE)
+        ):
+            spatial_val = None
+        if text_val and (
+            not re.search(r"\d", str(text_val)) or re.search(r"miles|hours", str(text_val), re.IGNORECASE)
+        ):
+            text_val = None
     if spatial_val and (is_form_header_value(spatial_val) or (
         field in ("consignor", "consignee", "origin", "destination", "commodity_description", "driver_name")
         and looks_like_ocr_junk(spatial_val)
@@ -491,7 +593,6 @@ def extract_fields_from_raw_text(raw_text: str) -> Dict[str, Any]:
 
     patterns = {
         "bill_number": r"(?:n\.?\s*[ºo°]?\s*de\s+factura|carta\s*de\s*porte|bill\s*number|bill\s*no\.?|bill\s*#|bol\s*no\.?|waybill|gu[ií]a(?:\s*n[úu]m(?:ero)?)?)[:.\s#]+([\w.\u0900-\u097F-]{3,})",
-        "invoice_number": r"(?:n[úu]mero\s+de\s+factura|numero\s+de\s+factura|invoice\s*number|invoice\s*no\.?|inv\s*no\.?|inv\s*#)[:.\s#]+([\w.\u0900-\u097F-]{3,})",
         "bill_date": r"(?:date|dated|fecha)[:\s]*(\d{1,2}[/.-]\d{1,2}[/.-]\d{2,4}|\d{4}[/.-]\d{1,2}[/.-]\d{1,2})",
         "consignor": r"(?:consignor|shipper|billed\s*from|remitente|expedidor)[:\s]*([^\n]+)",
         "consignee": r"(?:consignee|receiver|billed\s*to|destinatario|consignatario)[:\s]*([^\n]+)",
@@ -515,7 +616,8 @@ def extract_fields_from_raw_text(raw_text: str) -> Dict[str, Any]:
             r"[^\n:]*[:\s]*\n?\s*([\$₹€£]?\s*[0-9][0-9,]*(?:\.\d+)?)"
         ),
         "vehicle_number": (
-            r"(?:n[úu]mero\s+de\s+veh[ií]culo|numero\s+de\s+vehiculo|vehicle\s*number|truck\s*no\.?|truckno\.?)"
+            r"(?:n[úu]mero\s+de\s+veh[ií]culo|numero\s+de\s+vehiculo|"
+            r"vehicle\s*(?:number|no\.?)|truck\s*(?:number|no\.?)|truckno\.?)"
             r"[:\s]*\n?\s*#?\s*([\w.\u0900-\u097F-]{1,})"
         ),
         "driver_name": r"(?:nombre\s+del\s+conductor|driver\s*name|(?<![A-Za-z])driver)[:\s]*\n?\s*([^\n]+)",
@@ -585,7 +687,7 @@ def extract_fields_from_raw_text(raw_text: str) -> Dict[str, Any]:
             res["carrier"] = letterhead
 
     if not res.get("bill_number"):
-        ticket = re.search(r"(?:^|\n)\s*No\.\s+(\d[\w.-]{2,})\s*(?:\n|$)", raw_text, re.IGNORECASE)
+        ticket = re.search(r"(?:^|\n)\s*No\.?\s*(\d[\w.-]{2,})\s*(?:\n|$)", raw_text, re.IGNORECASE)
         if ticket and not is_form_header_value(ticket.group(1)):
             res["bill_number"] = ticket.group(1)
 
@@ -594,6 +696,27 @@ def extract_fields_from_raw_text(raw_text: str) -> Dict[str, Any]:
         existing = res.get(key)
         if not existing or (key == "commodity_description" and re.search(r"\d{5,}", str(existing))):
             res[key] = val
+    fill = recover_import_fill(raw_text) or recover_import_fill(
+        str(res.get("commodity_description") or "")
+    ) or recover_import_fill(str(res.get("special_instructions") or ""))
+    if fill:
+        existing = str(res.get("commodity_description") or "")
+        if not existing or recover_import_fill(existing) or re.search(r"t?mport", existing, re.IGNORECASE):
+            res["commodity_description"] = fill
+            if recover_import_fill(str(res.get("special_instructions") or "")):
+                res["special_instructions"] = None
+    existing_comm = str(res.get("commodity_description") or "").strip()
+    if not existing_comm or re.fullmatch(r"\d{1,2}\.?", existing_comm):
+        named = recover_table_commodity(raw_text)
+        if named:
+            res["commodity_description"] = named
+
+    if res.get("vehicle_number") and len(re.sub(r"\D", "", str(res.get("vehicle_number")))) >= 5:
+        res["vehicle_number"] = None
+    if not res.get("vehicle_number") or is_form_header_value(res.get("vehicle_number")):
+        truck = extract_truck_number(raw_text)
+        if truck:
+            res["vehicle_number"] = truck
 
     if not res.get("bill_date"):
         boxed = parse_boxed_month_day_year(raw_text)
@@ -615,6 +738,12 @@ def extract_fields_from_raw_text(raw_text: str) -> Dict[str, Any]:
     ship = re.sub(r"[^a-z0-9]+", "", str(res.get("consignor") or "").lower())
     recv = re.sub(r"[^a-z0-9]+", "", str(res.get("consignee") or "").lower())
     if ship and recv and ship == recv:
+        res["consignee"] = None
+    haul = re.sub(r"[^a-z0-9]+", "", str(res.get("carrier") or "").lower())
+    if ship and haul and ship == haul:
+        res["consignor"] = None
+    recv = re.sub(r"[^a-z0-9]+", "", str(res.get("consignee") or "").lower())
+    if recv and haul and recv == haul:
         res["consignee"] = None
 
     if not res.get("pickup_time") or not res.get("delivery_time") or (

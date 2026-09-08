@@ -8,22 +8,42 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from app.core.config import settings
 from app.ocr.calibration import STATUS_CALIBRATED, field_auto_post_threshold
 from app.ocr.decode import DECODE_FIELDS
-from app.ocr.matching import _collapse
-from app.ocr.normalizer import CRITICAL_FIELDS, is_form_header_value, looks_like_ocr_junk
+from app.ocr.matching import _collapse, is_gazetteer_near_miss, is_letterhead_as_party, is_weak_entity_stub
+from app.ocr.normalizer import is_form_header_value, looks_like_ocr_junk
 
 logger = logging.getLogger(__name__)
 
 REASON_MISSING = "missing_field"
 REASON_LOW_CONF = "low_confidence"
+REASON_WEAK_OCR = "weak_ocr_stub"
 REASON_AMBIGUOUS = "candidate_ambiguity"
 REASON_JOINT = "joint_decode_uncertain"
 REASON_CONSISTENCY = "consistency_conflict"
 
 RESCUE_FIELDS = (
-    *CRITICAL_FIELDS,
+    "bill_number",
+    "bill_date",
+    "consignor",
+    "consignee",
+    "origin",
+    "destination",
+    "freight_amount",
+    "total_amount",
     "carrier",
     "driver_name",
     "weight",
+    "commodity_description",
+)
+
+# Asked on the same Groq call when rescue already fired. Does not start a new call.
+SAME_CALL_FIELDS = (
+    "bill_date",
+    "commodity_description",
+    "quantity",
+    "vehicle_number",
+    "pickup_time",
+    "delivery_time",
+    "line_items",
 )
 
 CONSISTENCY_TRIGGER_CODES = frozenset(
@@ -40,7 +60,7 @@ def _cfg_enabled() -> bool:
 
 def _max_fields() -> int:
     try:
-        return max(0, int(getattr(settings, "GROQ_VISION_FALLBACK_MAX_FIELDS", 6) or 6))
+        return max(0, int(getattr(settings, "GROQ_VISION_FALLBACK_MAX_FIELDS", 8) or 8))
     except (TypeError, ValueError):
         return 6
 
@@ -62,8 +82,46 @@ def _ambiguity_gap() -> float:
 def _has_value(value: Any) -> bool:
     if value is None:
         return False
+    if isinstance(value, list):
+        return _line_item_count(value) > 0
     text = str(value).strip()
     return bool(text) and text.lower() not in {"none", "null", "n/a", "unknown", "—"}
+
+
+def _line_item_count(value: Any) -> int:
+    if not isinstance(value, list):
+        return 0
+    count = 0
+    for row in value:
+        if not isinstance(row, dict):
+            continue
+        if any(_has_value(val) for key, val in row.items() if key != "item_no"):
+            count += 1
+    return count
+
+
+def _usable_line_items(value: Any) -> bool:
+    return _line_item_count(value) >= 2
+
+
+def _times_from_line_items(items: Any) -> Dict[str, str]:
+    rows = [row for row in (items or []) if isinstance(row, dict)]
+    if not rows:
+        return {}
+    first, last = rows[0], rows[-1]
+    out: Dict[str, str] = {}
+    pickup = first.get("load_arrive") or first.get("pickup_time")
+    delivery = (
+        last.get("unload_depart")
+        or last.get("unload_arrive")
+        or last.get("load_depart")
+        or last.get("delivery_time")
+    )
+    if _has_value(pickup):
+        out["pickup_time"] = str(pickup).strip()
+    if _has_value(delivery):
+        out["delivery_time"] = str(delivery).strip()
+    return out
 
 
 def _calibration_fields(extracted: Optional[Dict[str, Any]], raw_ocr: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -107,13 +165,24 @@ def field_confidence_signal(
     except (TypeError, ValueError):
         pass
     used = calibrated if calibrated_available else heuristic
+    value = (extracted or {}).get(field)
+    cand_vals = [row.get("value") for row in _candidate_rows(raw_ocr, field)]
+    near_miss = is_gazetteer_near_miss(field, value, cand_vals if cand_vals else None)
+    strong = bool(
+        _has_value(value)
+        and used >= max(threshold, _min_confidence())
+        and not is_weak_entity_stub(field, value)
+        and not is_letterhead_as_party(field, value, carrier=(extracted or {}).get("carrier"))
+        and not looks_like_ocr_junk(value)
+        and not near_miss
+    )
     return {
         "heuristic": heuristic,
         "calibrated": calibrated,
         "calibrated_available": calibrated_available,
         "used": used,
         "threshold": threshold,
-        "strong": bool(_has_value((extracted or {}).get(field)) and used >= max(threshold, _min_confidence())),
+        "strong": strong,
     }
 
 
@@ -186,6 +255,16 @@ def select_rescue_fields(
         empty = not _has_value(data.get(field))
         if empty:
             reasons.append(REASON_MISSING)
+        elif (
+            is_weak_entity_stub(field, data.get(field))
+            or looks_like_ocr_junk(data.get(field))
+            or is_gazetteer_near_miss(
+                field,
+                data.get(field),
+                [row.get("value") for row in _candidate_rows(raw_ocr, field)] or None,
+            )
+        ):
+            reasons.append(REASON_WEAK_OCR)
         if signal["calibrated_available"]:
             if signal["used"] < max(float(signal["threshold"]), _min_confidence()):
                 reasons.append(REASON_LOW_CONF)
@@ -215,7 +294,7 @@ def select_rescue_fields(
         priority = 0
         if REASON_MISSING in reasons:
             priority += 8
-        if REASON_LOW_CONF in reasons:
+        if REASON_LOW_CONF in reasons or REASON_WEAK_OCR in reasons:
             priority += 4
         if REASON_AMBIGUOUS in reasons:
             priority += 2
@@ -238,6 +317,45 @@ def select_rescue_fields(
     return [row for _prio, row in ranked[:limit]]
 
 
+def augment_same_call_fields(
+    plan: Sequence[Dict[str, Any]],
+    extracted: Optional[Dict[str, Any]],
+    raw_ocr: Optional[Dict[str, Any]] = None,
+) -> List[Dict[str, Any]]:
+    """If Groq is already running, also ask it to read date and load rows from the image."""
+    if not plan:
+        return []
+    data = extracted if isinstance(extracted, dict) else {}
+    have = {item.get("field") for item in plan}
+    extra: List[Dict[str, Any]] = []
+    for field in SAME_CALL_FIELDS:
+        if field in have:
+            continue
+        current = data.get(field)
+        if field == "line_items":
+            if _usable_line_items(current):
+                continue
+        elif _has_value(current):
+            continue
+        signal = field_confidence_signal(field, data, raw_ocr) if field != "line_items" else {
+            "heuristic": 0.0,
+            "calibrated": 0.0,
+            "calibrated_available": False,
+            "used": 0.0,
+            "threshold": 0.0,
+            "strong": False,
+        }
+        extra.append(
+            {
+                "field": field,
+                "reasons": [REASON_MISSING],
+                "current_value": current,
+                "confidence": signal,
+            }
+        )
+    return list(plan) + extra
+
+
 def build_fallback_user_text(
     rescue_plan: Sequence[Dict[str, Any]],
     extracted: Optional[Dict[str, Any]],
@@ -250,6 +368,8 @@ def build_fallback_user_text(
         + ", ".join(item["field"] for item in rescue_plan if item.get("field")),
         "The candidate lists below are evidence only. Read the image.",
         "You may return a value that is not in the candidate list if the image clearly shows it.",
+        "Read every handwritten load row (tag, weight, load in/out, unload in/out) into line_items.",
+        "MO / DAY / YR boxes are bill_date (YYYY-MM-DD). JOB DAY is not the date.",
         "Return a single JSON object only. No markdown, no explanation.",
         "",
     ]
@@ -289,6 +409,66 @@ def build_fallback_user_text(
     return "\n".join(lines).strip()
 
 
+def _bbox_from_meta(raw_ocr: Optional[Dict[str, Any]], field: str) -> Optional[List[float]]:
+    meta = ((raw_ocr or {}).get("field_metadata") or {}).get(field) or {}
+    loc = meta.get("source_location") if isinstance(meta, dict) else None
+    if isinstance(loc, (list, tuple)) and len(loc) >= 4:
+        return [float(v) for v in loc[:4]]
+    region = (((raw_ocr or {}).get("layout_classification") or {}).get("field_regions") or {}).get(field) or {}
+    bbox = region.get("bbox") if isinstance(region, dict) else None
+    if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
+        return [float(v) for v in bbox[:4]]
+    return None
+
+
+def crop_rescue_images(
+    page_images: Optional[Sequence[Any]],
+    raw_ocr: Optional[Dict[str, Any]],
+    rescue_plan: Sequence[Dict[str, Any]],
+    *,
+    padding: int = 80,
+    max_crops: int = 1,
+) -> List[Any]:
+    """Full page first, then at most one crop. Two images stay under Groq's 7000 ITPM."""
+    pages = [img for img in list(page_images or []) if img is not None]
+    if not pages:
+        return []
+    page = pages[0]
+    if not hasattr(page, "size") or not hasattr(page, "crop"):
+        return pages
+    width, height = page.size
+    crops: List[Any] = []
+    seen: List[Tuple[int, int, int, int]] = []
+    fields: List[str] = []
+    for item in rescue_plan:
+        field = item.get("field")
+        if field and field not in fields:
+            fields.append(field)
+    if "line_items" in fields:
+        for extra in ("commodity_description", "weight", "quantity"):
+            if extra not in fields:
+                fields.append(extra)
+    for field in fields:
+        if len(crops) >= max_crops:
+            break
+        bbox = _bbox_from_meta(raw_ocr, field)
+        if not bbox:
+            continue
+        min_x, min_y, max_x, max_y = bbox
+        left = max(0, int(min_x - padding))
+        top = max(0, int(min_y - padding))
+        right = min(width, int(max_x + padding))
+        bottom = min(height, int(max_y + padding))
+        if right - left < 40 or bottom - top < 40:
+            continue
+        key = (left, top, right, bottom)
+        if key in seen:
+            continue
+        seen.append(key)
+        crops.append(page.crop(key))
+    return [page] + crops[:max_crops]
+
+
 def _values_agree(left: Any, right: Any) -> bool:
     return _collapse(str(left or "")) == _collapse(str(right or "")) and bool(_collapse(str(left or "")))
 
@@ -321,7 +501,41 @@ def merge_fallback_fields(
         reasons = list(item.get("reasons") or [])
         signal = item.get("confidence") or {}
         strong = bool(signal.get("strong"))
-        weak = (not _has_value(previous)) or (REASON_LOW_CONF in reasons) or (REASON_MISSING in reasons)
+        if field == "line_items":
+            groq_value = groq.get("line_items")
+            previous = det.get("line_items")
+            usable = _usable_line_items(groq_value)
+            prev_n = _line_item_count(previous)
+            groq_n = _line_item_count(groq_value)
+            action = "keep_deterministic"
+            if usable and groq_n > prev_n:
+                action = "accept_groq"
+                accepted["line_items"] = groq_value
+                for key, val in _times_from_line_items(groq_value).items():
+                    if not _has_value(det.get(key)) and key not in accepted:
+                        accepted[key] = val
+            decisions.append(
+                {
+                    "field": "line_items",
+                    "source": "groq_vision_fallback" if action == "accept_groq" else "deterministic",
+                    "reason": reasons,
+                    "previous_value": prev_n,
+                    "groq_value": groq_n if usable else None,
+                    "agreed_with_deterministic": prev_n == groq_n and groq_n > 0,
+                    "action": action,
+                }
+            )
+            continue
+        weak = (
+            (not _has_value(previous))
+            or (REASON_LOW_CONF in reasons)
+            or (REASON_MISSING in reasons)
+            or (REASON_WEAK_OCR in reasons)
+            or is_weak_entity_stub(field, previous)
+            or is_letterhead_as_party(field, previous, carrier=det.get("carrier"))
+            or looks_like_ocr_junk(previous)
+            or is_gazetteer_near_miss(field, previous)
+        )
         usable = _usable_groq_value(field, groq_value)
         agreed = bool(usable and _has_value(previous) and _values_agree(previous, groq_value))
         action = "keep_deterministic"
@@ -384,7 +598,7 @@ def run_vision_fallback(
     report = empty_fallback_report(called=False, status="disabled" if not _cfg_enabled() else "not_needed")
     if not _cfg_enabled():
         return {**report, "accepted": {}, "plan": []}
-    plan = select_rescue_fields(extracted, raw_ocr)
+    plan = augment_same_call_fields(select_rescue_fields(extracted, raw_ocr), extracted, raw_ocr)
     report["plan"] = plan
     report["groq_fallback_fields"] = [item["field"] for item in plan]
     if not plan:
@@ -394,11 +608,17 @@ def run_vision_fallback(
 
     caller = vision_fn or extract_fields_with_groq_vision
     context = build_fallback_user_text(plan, extracted, raw_ocr)
+    vision_images = crop_rescue_images(page_images, raw_ocr, plan)[:2]
+    if len(vision_images) > 1:
+        context = (
+            "First image is the full page. Later images are zoomed crops of uncertain fields.\n"
+            + context
+        )
     groq_fields = None
     error = None
     try:
         groq_fields = caller(
-            page_images,
+            vision_images or page_images,
             focus_fields=[item["field"] for item in plan],
             field_context=context,
         )

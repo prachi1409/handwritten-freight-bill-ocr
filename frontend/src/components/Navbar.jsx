@@ -6,15 +6,18 @@ export default function Navbar({ onNavigateHome }) {
     <header className="navbar">
       <a href="#" className="brand" onClick={(e) => { e.preventDefault(); onNavigateHome(); }}>
         <div className="brand-icon">
-          <FileText size={20} color="#ffffff" />
+          <FileText size={18} color="#ffffff" />
         </div>
-        <span>Freight Bill OCR</span>
+        <span className="brand-copy">
+          <span>Freight Bill OCR</span>
+          <span className="brand-kicker">Handwritten bill review</span>
+        </span>
       </a>
 
       <nav className="nav-links">
-        <a 
-          href="#" 
-          className="nav-link active" 
+        <a
+          href="#"
+          className="nav-link active"
           onClick={(e) => { e.preventDefault(); onNavigateHome(); }}
         >
           <Database size={16} />
@@ -24,4 +27,3 @@ export default function Navbar({ onNavigateHome }) {
     </header>
   );
 }
-

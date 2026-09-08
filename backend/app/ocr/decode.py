@@ -328,13 +328,18 @@ def _apply_selected_enabled() -> bool:
 
 
 def _ocr_guard_blocks(field: str, selected_value: Any, field_candidates: Optional[Dict[str, List[Dict[str, Any]]]]) -> bool:
-    from app.ocr.matching import _is_harvestable_name
+    from app.ocr.matching import _is_harvestable_name, is_weak_entity_stub
 
     pool = (field_candidates or {}).get(field) or []
     if not pool:
         return False
     best = max(pool, key=lambda row: float(row.get("fuzzy_score") or 0.0))
-    if not _is_harvestable_name(field, str(best.get("value") or "")):
+    best_value = str(best.get("value") or "")
+    if not _is_harvestable_name(field, best_value) or is_weak_entity_stub(field, best_value):
+        return False
+    from app.ocr.normalizer import looks_like_ocr_junk
+
+    if looks_like_ocr_junk(best_value):
         return False
     best_fuzzy = float(best.get("fuzzy_score") or 0.0)
     selected_fuzzy = 0.0
@@ -359,13 +364,32 @@ def apply_joint_selection(
     if not report["enabled"] or not isinstance(selected, dict):
         return out, report
 
-    from app.ocr.matching import _is_harvestable_name
+    from app.ocr.matching import _is_harvestable_name, clear_letterhead_as_party, is_letterhead_as_party
+    from app.ocr.normalizer import looks_like_ocr_junk
 
     for field in DECODE_FIELDS:
         value = selected.get(field)
-        if not value or not _is_harvestable_name(field, str(value)):
-            continue
         previous = out.get(field)
+        if is_letterhead_as_party(field, value, carrier=out.get("carrier")):
+            if is_letterhead_as_party(field, previous, carrier=out.get("carrier")):
+                out[field] = None
+            report["fields"][field] = {
+                "status": "rejected_letterhead",
+                "previous": previous,
+                "selected": value,
+            }
+            continue
+        if not value or not _is_harvestable_name(field, str(value)):
+            if previous and (
+                looks_like_ocr_junk(previous) or not _is_harvestable_name(field, str(previous))
+            ):
+                out[field] = None
+                report["fields"][field] = {
+                    "status": "rejected_junk",
+                    "previous": previous,
+                    "selected": value,
+                }
+            continue
         if _ocr_guard_blocks(field, value, field_candidates):
             report["fields"][field] = {
                 "status": "ocr_guard",
@@ -382,6 +406,7 @@ def apply_joint_selection(
             "previous": previous,
             "value": value,
         }
+    out = clear_letterhead_as_party(out)
     return out, report
 
 
@@ -411,6 +436,9 @@ def resolve_entity_assignment(
     joint = decode_joint_assignment(field_candidates, priors=priors)
     data, applied = apply_joint_selection(data, joint, field_candidates)
     data, fill = fill_peaked_party_field(data, priors=priors)
+    from app.ocr.matching import clear_letterhead_as_party
+
+    data = clear_letterhead_as_party(data, gazetteer)
     joint["applied"] = applied
     joint["applied_to_extraction"] = True
     joint["peaked_fill"] = fill

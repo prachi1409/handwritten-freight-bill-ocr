@@ -27,6 +27,33 @@ from app.services.storage_service import StorageService
 logger = logging.getLogger(__name__)
 
 
+def _peer_tickets_for_consistency(db: Session, exclude_id: UUID) -> List[Dict[str, Any]]:
+    """Lightweight tag/date/consignee index for duplicate-flagging. Never used as extraction input."""
+    rows = (
+        db.query(Document.id, Document.extracted_data)
+        .filter(Document.extracted_data.isnot(None), Document.id != exclude_id)
+        .limit(300)
+        .all()
+    )
+    peers: List[Dict[str, Any]] = []
+    for doc_id, data in rows:
+        if not isinstance(data, dict):
+            continue
+        tags = []
+        for item in data.get("line_items") or []:
+            if isinstance(item, dict) and item.get("tag"):
+                tags.append(str(item.get("tag")).strip())
+        peers.append(
+            {
+                "document_id": str(doc_id),
+                "consignee": data.get("consignee"),
+                "bill_date": data.get("bill_date"),
+                "tags": tags,
+            }
+        )
+    return peers
+
+
 class DocumentService:
     """High-level service class for document domain logic."""
 
@@ -246,7 +273,11 @@ class DocumentService:
                 exclude_document_id=doc.id,
             )
             final_status, warnings = apply_calibration_to_status(final_status, warnings, calibration)
-            consistency = attach_consistency_checks(normalized, ocr_result.raw_ocr)
+            consistency = attach_consistency_checks(
+                normalized,
+                ocr_result.raw_ocr,
+                peer_tickets=_peer_tickets_for_consistency(db, doc.id),
+            )
             final_status, warnings = apply_consistency_to_status(final_status, warnings, consistency)
             final_status, warnings = apply_fallback_disagreement_to_status(
                 final_status, warnings, ocr_result.raw_ocr
@@ -332,12 +363,26 @@ class DocumentService:
             return False
 
         try:
-            abs_path = StorageService.resolve_path(doc.stored_path)
-            if abs_path.exists():
-                abs_path.unlink(missing_ok=True)
+            StorageService.delete_stored_file(doc.stored_path)
         except Exception:
             pass
 
         db.delete(doc)
         db.commit()
         return True
+
+    @staticmethod
+    def delete_all_documents(db: Session) -> int:
+        """Delete every document row and its stored PDF. Returns how many were removed."""
+        rows = db.query(Document).all()
+        count = 0
+        for doc in rows:
+            try:
+                StorageService.delete_stored_file(doc.stored_path)
+            except Exception:
+                pass
+            db.delete(doc)
+            count += 1
+        db.commit()
+        logger.info("Deleted all %s freight bill document(s).", count)
+        return count

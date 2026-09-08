@@ -24,8 +24,8 @@ from app.ocr.vision_fallback import apply_fallback_disagreement_to_status
 logger = logging.getLogger(__name__)
 
 EVAL_FIELDS = (
-    "invoice_number",
     "bill_number",
+    "bill_date",
     "carrier",
     "consignor",
     "consignee",

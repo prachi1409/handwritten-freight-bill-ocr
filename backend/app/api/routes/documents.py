@@ -10,7 +10,15 @@ from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
 from app.db.database import get_db
-from app.schemas.document import DocumentResponse, DocumentUploadResponse, IngestionBatchResult, DocumentStatsResponse, DocumentReviewRequest, DocumentTranslateResponse
+from app.schemas.document import (
+    DocumentResponse,
+    DocumentUploadResponse,
+    IngestionBatchResult,
+    DocumentStatsResponse,
+    DocumentReviewRequest,
+    DocumentTranslateResponse,
+    DocumentDeleteAllResponse,
+)
 from app.ocr.report_pdf import build_extraction_report_pdf, render_first_page_png
 from app.services.document_service import DocumentService
 from app.services.storage_service import StorageService
@@ -34,6 +42,23 @@ def list_documents(
 ) -> List[DocumentResponse]:
     """List all documents."""
     return DocumentService.list_documents(db=db, skip=skip, limit=limit, q=q)
+
+
+@router.delete(
+    "",
+    response_model=DocumentDeleteAllResponse,
+    summary="Delete All Freight Bill Documents",
+    description="Delete every document record and its stored PDF. This cannot be undone.",
+)
+def delete_all_documents(
+    db: Session = Depends(get_db),
+) -> DocumentDeleteAllResponse:
+    """Remove all ingested freight bills and files."""
+    deleted = DocumentService.delete_all_documents(db=db)
+    return DocumentDeleteAllResponse(
+        deleted_count=deleted,
+        message=f"Deleted {deleted} document{'s' if deleted != 1 else ''}.",
+    )
 
 
 @router.get(

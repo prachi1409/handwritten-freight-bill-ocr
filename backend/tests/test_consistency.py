@@ -250,3 +250,76 @@ def test_existing_validation_behavior_remains_intact():
     status, warnings = validate_extraction_status(mismatch, confidence=0.90)
     assert status == DocumentStatus.REVIEW
     assert any("Line item sum" in item for item in warnings)
+
+
+def test_origin_destination_same_state_is_ok():
+    from app.ocr.consistency import CODE_ORIGIN_DEST_STATE_MISMATCH
+
+    payload = check_bill_consistency(
+        {"origin": "Stockton, CA 95213", "destination": "Discovery Bay, CA"},
+        priors=empty_priors(),
+    )
+    assert CODE_ORIGIN_DEST_STATE_MISMATCH not in _codes(payload)
+
+
+def test_origin_destination_state_mismatch_is_flagged():
+    from app.ocr.consistency import CODE_ORIGIN_DEST_STATE_MISMATCH
+
+    payload = check_bill_consistency(
+        {"origin": "Stockton, CA 95213", "destination": "Dallas, TX"},
+        priors=empty_priors(),
+    )
+    assert CODE_ORIGIN_DEST_STATE_MISMATCH in _codes(payload)
+    row = next(item for item in payload["checks"] if item["code"] == CODE_ORIGIN_DEST_STATE_MISMATCH)
+    assert row["severity"] == "warning"
+
+
+def test_duplicate_tags_on_same_bill_are_flagged():
+    from app.ocr.consistency import CODE_DUPLICATE_TAG
+
+    payload = check_bill_consistency(
+        {
+            "line_items": [
+                {"tag": "684755", "weight": "18.30"},
+                {"tag": "684755", "weight": "19.99"},
+            ]
+        },
+        priors=empty_priors(),
+    )
+    assert CODE_DUPLICATE_TAG in _codes(payload)
+
+
+def test_duplicate_tag_date_across_customer_is_flagged():
+    from app.ocr.consistency import CODE_DUPLICATE_TAG_DATE
+
+    payload = check_bill_consistency(
+        {
+            "consignee": "Aquamarine",
+            "bill_date": "2025-04-30",
+            "line_items": [{"tag": "684755"}],
+        },
+        priors=empty_priors(),
+        peer_tickets=[
+            {
+                "document_id": "peer-1",
+                "consignee": "Aquamarine",
+                "bill_date": "2025-04-30",
+                "tags": ["684755"],
+            }
+        ],
+    )
+    assert CODE_DUPLICATE_TAG_DATE in _codes(payload)
+
+
+def test_new_consistency_flags_do_not_rewrite_fields():
+    extracted = {
+        "origin": "Stockton, CA 95213",
+        "destination": "Dallas, TX",
+        "vehicle_number": "22",
+        "commodity_description": "Import Fill",
+        "line_items": [{"tag": "1"}, {"tag": "1"}],
+    }
+    attach_consistency_checks(extracted, priors=empty_priors())
+    assert extracted["vehicle_number"] == "22"
+    assert extracted["commodity_description"] == "Import Fill"
+    assert extracted["origin"] == "Stockton, CA 95213"

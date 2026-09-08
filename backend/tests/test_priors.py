@@ -118,7 +118,7 @@ def test_gazetteer_matching_is_unchanged():
     from app.ocr.matching import apply_entity_matching
 
     out = apply_entity_matching({"consignor": "CleanPlanet", "driver_name": "207855"})
-    assert out["consignor"] == "Clean Planet"
+    assert out["consignor"] == "Clean Planet Hooper"
     assert out["driver_name"] == "207855"
 
 

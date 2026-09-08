@@ -92,6 +92,7 @@ x4bocK4457600q
     assert fields.get("pickup_time") == "5:20"
     assert fields.get("delivery_time") == "5:27"
     assert fields.get("bill_number") == "16740-1"
+    assert fields.get("bill_date") == "2026-02-02"
     assert fields.get("quantity") == "1"
     assert "Rock" in (fields.get("commodity_description") or "")
     assert "445760" not in (fields.get("commodity_description") or "")
@@ -111,6 +112,35 @@ def test_compact_times_and_duplicate_party_junk():
     assert looks_like_ocr_junk("BElIm Ae ME") is True
     assert looks_like_ocr_junk("Sharma Industrial Supply") is False
     assert looks_like_ocr_junk("A&A Concrete") is False
+    assert looks_like_ocr_junk("YRZ5 Stockton Discavery Bay CA") is True
+    assert looks_like_ocr_junk("Discovery Bay CA") is False
+
+
+def test_import_fill_recovers_as_commodity():
+    from app.ocr.field_extractor import extract_fields_from_raw_text
+
+    fields = extract_fields_from_raw_text(
+        "SHIPPER\nClean Planet\nCONSIGNEE\nAqua Marine\n1.ImPor+Fill\n18.41\n"
+    )
+    assert fields.get("commodity_description") == "Import Fill"
+    assert fields.get("special_instructions") in (None, "")
+
+    tmport = extract_fields_from_raw_text("No.91503-5\n1.TMPORT\n18.30\n")
+    assert tmport.get("bill_number") == "91503-5"
+    assert tmport.get("commodity_description") == "Import Fill"
+
+    split_fill = extract_fields_from_raw_text(
+        "COMMODITY\n1.TMPORT\n5:55\nFILL\n19.99\n"
+    )
+    assert split_fill.get("commodity_description") == "Import Fill"
+
+    truck_glued = extract_fields_from_raw_text(
+        "TRAILEROWNER\nTRUCKNO.\nMILES\nCMAT\n22\nTRUCKLICENSE\n"
+    )
+    assert truck_glued.get("vehicle_number") == "22"
+
+    truck_named = extract_fields_from_raw_text("TRUCK NUMBER\n22\nMILES\n15\n")
+    assert truck_named.get("vehicle_number") == "22"
 
     text = """
     CALIFORNIAMATERIALS,INC.
@@ -297,3 +327,28 @@ def test_scale_ticket_column_headers_are_not_field_values():
     assert norm.get("driver_name") is None
     assert norm.get("special_instructions") is None
     assert norm.get("weight") == "17.85"
+
+
+def test_mega_dumps_table_commodity_and_truck_not_tag():
+    from app.ocr.field_extractor import extract_fields_from_raw_text, extract_truck_number
+
+    text = """
+    MEGA DUMPS
+    SHIPPER
+    Clean Planet Hooper
+    TRUCK NO
+    26
+    339352
+    COMMODITY
+    1
+    Dirt
+    TAG NUMBER
+    684773
+    WEIGHT
+    18.77
+    """
+    fields = extract_fields_from_raw_text(text)
+    assert fields.get("commodity_description") == "Dirt"
+    assert fields.get("vehicle_number") == "26"
+    assert extract_truck_number("TRUCK NO\n339352\n26\n") == "26"
+    assert extract_truck_number("TRUCK NO\n339352\n") in (None, "")

@@ -8,6 +8,8 @@ from app.core.config import settings
 from app.ocr.matching import (
     _collapse,
     _is_harvestable_name,
+    is_letterhead_as_party,
+    is_weak_entity_stub,
     load_matching_memory,
     name_variants,
     resolve_alias,
@@ -197,9 +199,13 @@ def generate_field_candidates(
         names = list(gaz.get(field) or [])
         pooled: Dict[str, Dict[str, Any]] = {}
 
+        carrier = working.get("carrier") or context.get("carrier")
+
         def take(value: str, fuzzy: float, source: str) -> None:
             label = str(value or "").strip()
             if not label or not _is_harvestable_name(field, label):
+                return
+            if is_letterhead_as_party(field, label, carrier=carrier, gazetteer=gaz):
                 return
             key = _collapse(label)
             if not key:
@@ -234,7 +240,7 @@ def generate_field_candidates(
 
         prior_map = _prior_index(field, working, prior_store)
         route_context = _has_prior_context(field, working) and bool(prior_map)
-        if not query and route_context and _inject_priors_enabled():
+        if (not query or is_weak_entity_stub(field, data.get(field))) and route_context and _inject_priors_enabled():
             injected = 0
             min_count = _inject_min_count()
             for label, count, _prob in _prior_rows_for_field(field, working, prior_store):
@@ -270,7 +276,14 @@ def generate_field_candidates(
             )
         )
         out[field] = ranked[:limit]
-        if not _usable_query(field, working.get(field)) and out[field]:
-            working[field] = out[field][0]["value"]
+        if out[field] and (
+            not _usable_query(field, working.get(field)) or is_weak_entity_stub(field, working.get(field))
+        ):
+            pick = out[field][0]
+            for row in out[field]:
+                if not is_weak_entity_stub(field, row.get("value")):
+                    pick = row
+                    break
+            working[field] = pick["value"]
 
     return out

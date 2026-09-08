@@ -124,6 +124,16 @@ export async function deleteDocument(id) {
 }
 
 /**
+ * Delete every document record and stored file.
+ */
+export async function deleteAllDocuments() {
+  const response = await fetch(`${API_BASE_URL}/documents`, {
+    method: 'DELETE',
+  });
+  return handleResponse(response);
+}
+
+/**
  * Get direct file URL for viewing PDF.
  */
 export function getDocumentFileUrl(id) {

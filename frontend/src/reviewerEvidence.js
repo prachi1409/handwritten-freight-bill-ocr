@@ -8,7 +8,7 @@ export const VALIDATE_OWNED_CODES = new Set([
   "LINE_ITEM_SUM_MISMATCH",
 ]);
 
-const EVIDENCE_SOURCES = new Set(["ocr", "ocr_text", "gazetteer", "alias"]);
+const EVIDENCE_SOURCES = new Set(["ocr", "ocr_text", "gazetteer", "alias", "prior"]);
 
 export function isFieldPresent(val) {
   return val !== null && val !== undefined && String(val).trim() !== "" && String(val).trim() !== "—";

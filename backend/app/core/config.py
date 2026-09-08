@@ -29,10 +29,10 @@ class Settings(BaseSettings):
     GROQ_VISION_MODEL: str = "qwen/qwen3.6-27b"
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_VISION_MAX_PAGES: int = 2
-    GROQ_VISION_MAX_EDGE: int = 1536
+    GROQ_VISION_MAX_EDGE: int = 1024
     # Point 7: Groq Vision is a field-aware rescue, not the default extractor.
     GROQ_VISION_FALLBACK_ENABLED: bool = True
-    GROQ_VISION_FALLBACK_MAX_FIELDS: int = 6
+    GROQ_VISION_FALLBACK_MAX_FIELDS: int = 8
     GROQ_VISION_FALLBACK_MIN_CONFIDENCE: float = 0.80
     GROQ_VISION_AMBIGUITY_MAX_GAP: float = 0.08
     ENABLE_ENTITY_MATCHING: bool = True
@@ -68,6 +68,10 @@ class Settings(BaseSettings):
     STORAGE_LOCATION: str = "./storage/documents"
     INPUT_DOC_LOCATION: str = "./input_doc_location"
     PROCESSED_DOCUMENTS_LOCATION: str = "./processed_documents"
+    # Supabase Storage for bill PDFs (private bucket). Service role is required.
+    SUPABASE_URL: str = ""
+    SUPABASE_SERVICE_ROLE_KEY: str = ""
+    SUPABASE_STORAGE_BUCKET: str = "freight-bills"
 
     model_config = SettingsConfigDict(
         env_file=".env",
@@ -85,8 +89,40 @@ class Settings(BaseSettings):
 
     @property
     def storage_path(self) -> Path:
-        """Return Path object for storage/documents directory."""
-        return Path(self.STORAGE_LOCATION).resolve()
+        """Return Path object for storage/documents directory (backend-root relative)."""
+        path = Path(self.STORAGE_LOCATION)
+        if path.is_absolute():
+            return path
+        backend_root = Path(__file__).resolve().parent.parent.parent
+        return (backend_root / path).resolve()
+
+    @property
+    def supabase_project_url(self) -> str:
+        """Explicit SUPABASE_URL, or derived from a Supabase DATABASE_URL."""
+        explicit = (self.SUPABASE_URL or "").strip().rstrip("/")
+        if explicit:
+            return explicit
+        from urllib.parse import unquote, urlparse
+
+        parsed = urlparse(self.DATABASE_URL or "")
+        user = unquote(parsed.username or "")
+        host = parsed.hostname or ""
+        if user.startswith("postgres.") and "supabase.com" in host:
+            ref = user.split(".", 1)[1]
+            if ref:
+                return f"https://{ref}.supabase.co"
+        if host.startswith("db.") and host.endswith(".supabase.co"):
+            parts = host.split(".")
+            if len(parts) >= 3:
+                return f"https://{parts[1]}.supabase.co"
+        return ""
+
+    @property
+    def supabase_storage_enabled(self) -> bool:
+        """True when the backend can upload/download PDFs in Supabase Storage."""
+        if self.TESTING:
+            return False
+        return bool(self.supabase_project_url and (self.SUPABASE_SERVICE_ROLE_KEY or "").strip())
 
     @property
     def input_path(self) -> Path:

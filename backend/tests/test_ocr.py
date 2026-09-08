@@ -44,7 +44,7 @@ def test_valid_handwritten_freight_bill_completed(db_session, create_pdf):
 
     assert updated.status == DocumentStatus.COMPLETED
     assert updated.extracted_data["bill_number"] == "HB-78421"
-    assert updated.extracted_data["invoice_number"] == "INV-HB-5821"
+    assert updated.extracted_data.get("invoice_number") in (None, "")
     assert updated.extracted_data["consignor"] == "Sharma Industrial Supply"
     assert updated.extracted_data["freight_amount"] == "$3,450.00"
     assert updated.overall_confidence >= 0.70

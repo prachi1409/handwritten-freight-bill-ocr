@@ -2,6 +2,7 @@ import React, { useState, useEffect } from 'react';
 import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, Cpu, MapPin, Package, DollarSign, Truck, Languages, Download } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import ReviewerFieldPanel from './ReviewerFieldPanel';
+import ConfirmModal from './ConfirmModal';
 import { fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl, getDocumentPreviewUrl, downloadExtractionReport, deleteDocument, translateDocumentFields } from '../api';
 import {
   buildReviewReasons,
@@ -11,7 +12,7 @@ import {
 } from '../reviewerEvidence';
 
 const FIELD_GROUPS = [
-  { id: 'identity', title: 'Bill identity', keys: ['bill_number', 'bill_date', 'invoice_number', 'carrier'] },
+  { id: 'identity', title: 'Bill identity', keys: ['bill_number', 'bill_date', 'carrier'] },
   { id: 'parties', title: 'Parties & route', keys: ['consignor', 'consignee', 'origin', 'destination'] },
   { id: 'cargo', title: 'Cargo', keys: ['commodity_description', 'quantity', 'weight'] },
   { id: 'charges', title: 'Charges', keys: ['freight_amount', 'fuel_surcharge', 'handling_charge', 'total_amount'] },
@@ -39,6 +40,7 @@ export default function DocumentDetail({ documentId, onBack }) {
   const [englishFields, setEnglishFields] = useState(null);
   const [isTranslating, setIsTranslating] = useState(false);
   const [isDownloadingReport, setIsDownloadingReport] = useState(false);
+  const [isDeleteOpen, setIsDeleteOpen] = useState(false);
 
   const loadDocument = async () => {
     if (!documentId) {
@@ -65,6 +67,7 @@ export default function DocumentDetail({ documentId, onBack }) {
   useEffect(() => {
     setShowEnglish(false);
     setEnglishFields(null);
+    setIsDeleteOpen(false);
     if (documentId) {
       loadDocument();
     } else {
@@ -182,12 +185,6 @@ export default function DocumentDetail({ documentId, onBack }) {
   };
 
   const handleDelete = async () => {
-    const filename = doc?.original_filename || doc?.filename || 'this document';
-    const confirmed = window.confirm(
-      `Delete "${filename}"?\n\nThis removes the database record and the stored PDF.`
-    );
-    if (!confirmed) return;
-
     setIsDeleting(true);
     setError(null);
     setSuccessMessage(null);
@@ -196,6 +193,7 @@ export default function DocumentDetail({ documentId, onBack }) {
       onBack();
     } catch (err) {
       setIsDeleting(false);
+      setIsDeleteOpen(false);
       setError(err.message || 'Failed to delete document.');
     }
   };
@@ -357,13 +355,13 @@ export default function DocumentDetail({ documentId, onBack }) {
   return (
     <div>
       {/* Back Button & Action Toolbar */}
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1.5rem', flexWrap: 'wrap', gap: '0.75rem' }}>
+      <div className="detail-toolbar">
         <button className="btn btn-secondary" onClick={onBack}>
           <ArrowLeft size={16} />
-          <span>Back to Documents</span>
+          <span>Back to documents</span>
         </button>
 
-        <div style={{ display: 'flex', gap: '0.75rem', alignItems: 'center', flexWrap: 'wrap' }}>
+        <div className="detail-toolbar-actions">
           {!isEditing ? (
             <button className="btn btn-primary" onClick={handleStartEditing}>
               <Edit3 size={16} />
@@ -403,7 +401,7 @@ export default function DocumentDetail({ documentId, onBack }) {
 
           <button
             className="btn btn-danger"
-            onClick={handleDelete}
+            onClick={() => setIsDeleteOpen(true)}
             disabled={isDeleting || isEditing || isReprocessing}
           >
             {isDeleting ? <div className="spinner spinner-dark" /> : <Trash2 size={16} />}
@@ -419,9 +417,11 @@ export default function DocumentDetail({ documentId, onBack }) {
             {statusUpper === 'REVIEW' ? <AlertCircle size={16} /> : <CheckCircle2 size={16} />}
             <span>{successMessage}</span>
           </div>
-          <button 
+          <button
+            type="button"
+            className="alert-dismiss"
             onClick={() => setSuccessMessage(null)}
-            style={{ background: 'none', border: 'none', cursor: 'pointer', color: 'inherit', fontWeight: 700 }}
+            aria-label="Dismiss"
           >
             ✕
           </button>
@@ -959,6 +959,19 @@ export default function DocumentDetail({ documentId, onBack }) {
         </div>
 
       </div>
+
+      <ConfirmModal
+        isOpen={isDeleteOpen}
+        title="Delete this document?"
+        description={`“${doc.original_filename || doc.filename || 'this document'}” will be removed from the list and storage. This cannot be undone.`}
+        confirmLabel="Delete"
+        danger
+        isBusy={isDeleting}
+        onCancel={() => {
+          if (!isDeleting) setIsDeleteOpen(false);
+        }}
+        onConfirm={handleDelete}
+      />
     </div>
   );
 }

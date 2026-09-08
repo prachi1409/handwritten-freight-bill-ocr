@@ -8,9 +8,11 @@ from app.ocr.vision_fallback import (
     REASON_AMBIGUOUS,
     REASON_LOW_CONF,
     REASON_MISSING,
+    REASON_WEAK_OCR,
     apply_accepted_fallback,
     apply_fallback_disagreement_to_status,
     apply_fallback_metadata,
+    augment_same_call_fields,
     merge_fallback_fields,
     run_vision_fallback,
     select_rescue_fields,
@@ -20,6 +22,7 @@ from app.ocr.vision_fallback import (
 def _complete_fields(**overrides):
     data = {
         "bill_number": "16766-1",
+        "bill_date": "2026-04-30",
         "invoice_number": "INV-1",
         "consignor": "BELL MARINE",
         "consignee": "CORONE & CO",
@@ -30,6 +33,7 @@ def _complete_fields(**overrides):
         "carrier": "CMAT",
         "driver_name": "JOHN SMITH",
         "weight": "40000",
+        "commodity_description": "Import Fill",
     }
     data.update(overrides)
     return data
@@ -106,6 +110,94 @@ def test_only_uncertain_fields_are_selected():
     assert "total_amount" not in names
 
 
+def test_missing_bill_date_is_rescued_by_groq():
+    extracted = _extracted({"bill_date": ""}, {**_high_conf(_complete_fields()), "bill_date": 0.0})
+    plan = select_rescue_fields(extracted)
+    assert any(row["field"] == "bill_date" for row in plan)
+    report = run_vision_fallback(
+        extracted,
+        {"field_confidence": extracted["field_confidence"]},
+        vision_fn=lambda *_a, **_k: {"bill_date": "2026-04-30"},
+    )
+    assert report["accepted"]["bill_date"] == "2026-04-30"
+    assert apply_accepted_fallback(extracted, report)["bill_date"] == "2026-04-30"
+
+
+def test_datebox_destination_salad_is_rescued_by_groq():
+    extracted = _extracted(
+        {"destination": "YRZ5 Stockton Discavery Bay CA"},
+        {**_high_conf(_complete_fields()), "destination": 0.85},
+    )
+    plan = select_rescue_fields(extracted)
+    assert any(row["field"] == "destination" for row in plan)
+    report = run_vision_fallback(
+        extracted,
+        {"field_confidence": extracted["field_confidence"]},
+        vision_fn=lambda *_a, **_k: {"destination": "Discovery Bay, CA"},
+    )
+    assert report["accepted"]["destination"] == "Discovery Bay, CA"
+    assert apply_accepted_fallback(extracted, report)["destination"] == "Discovery Bay, CA"
+
+
+def test_same_call_asks_for_load_rows_and_posts_them():
+    extracted = _extracted(
+        {"consignee": "", "bill_date": ""},
+        {**_high_conf(_complete_fields()), "consignee": 0.0, "bill_date": 0.0},
+    )
+    plan = augment_same_call_fields(select_rescue_fields(extracted), extracted)
+    names = {row["field"] for row in plan}
+    assert "consignee" in names
+    assert "line_items" in names
+    assert "pickup_time" in names
+
+    rows = [
+        {"tag": "684774", "weight": "18.41", "load_arrive": "6:09", "load_depart": "6:14", "unload_arrive": "7:02", "unload_depart": "7:14"},
+        {"tag": "684780", "weight": "20.26", "load_arrive": "8:00", "load_depart": "8:11", "unload_arrive": "8:58", "unload_depart": "9:02"},
+        {"tag": "684828", "weight": "20.42", "load_arrive": "9:45", "load_depart": "9:56", "unload_arrive": "10:40", "unload_depart": "10:47"},
+        {"tag": "684880", "weight": "18.99", "load_arrive": "11:30", "load_depart": "11:46", "unload_arrive": "12:40", "unload_depart": "12:55"},
+    ]
+    report = run_vision_fallback(
+        extracted,
+        {"field_confidence": extracted["field_confidence"]},
+        vision_fn=lambda *_a, **_k: {
+            "consignee": "Aqua Marine",
+            "bill_date": "2025-04-30",
+            "line_items": rows,
+        },
+    )
+    assert report["accepted"]["consignee"] == "Aqua Marine"
+    assert report["accepted"]["bill_date"] == "2025-04-30"
+    assert len(report["accepted"]["line_items"]) == 4
+    assert report["accepted"]["pickup_time"] == "6:09"
+    assert report["accepted"]["delivery_time"] == "12:55"
+    merged = apply_accepted_fallback(extracted, report)
+    assert merged["line_items"][0]["tag"] == "684774"
+
+
+def test_high_confidence_still_skips_groq_when_complete():
+    extracted = _extracted()
+    assert augment_same_call_fields(select_rescue_fields(extracted), extracted) == []
+
+
+def test_empty_commodity_is_rescued_by_groq():
+    extracted = _extracted({"commodity_description": ""}, {**_high_conf(_complete_fields()), "commodity_description": 0.0})
+    plan = select_rescue_fields(extracted)
+    assert any(row["field"] == "commodity_description" for row in plan)
+    report = run_vision_fallback(
+        extracted,
+        {"field_confidence": extracted["field_confidence"]},
+        vision_fn=lambda *_a, **_k: {"commodity_description": "Import Fill"},
+    )
+    assert report["accepted"]["commodity_description"] == "Import Fill"
+
+
+def test_invoice_number_is_not_rescued():
+    extracted = _extracted({"invoice_number": ""}, {**_high_conf(_complete_fields()), "invoice_number": 0.0})
+    names = {row["field"] for row in select_rescue_fields(extracted)}
+    assert "invoice_number" not in names
+    assert "bill_date" not in names
+
+
 def test_empty_deterministic_accepts_groq_value():
     extracted = _extracted({"consignee": ""}, {**_high_conf(_complete_fields()), "consignee": 0.0})
     report = run_vision_fallback(
@@ -159,6 +251,70 @@ def test_strong_deterministic_disagreement_is_not_overwritten():
     assert decision["agreed_with_deterministic"] is False
     merged = apply_accepted_fallback(extracted, report)
     assert merged["carrier"] == "CMAT"
+
+
+def test_weak_ocr_stub_is_rescued_by_groq():
+    extracted = _extracted(
+        {"consignor": "clean", "consignee": "Aaua"},
+        confidence={"consignor": 0.85, "consignee": 0.85, "carrier": 0.95},
+    )
+    plan = select_rescue_fields(extracted, {"field_confidence": extracted["field_confidence"]})
+    rescued = {row["field"] for row in plan}
+    assert "consignor" in rescued
+    assert "consignee" in rescued
+    assert any(REASON_WEAK_OCR in row["reasons"] for row in plan if row["field"] == "consignor")
+
+    report = run_vision_fallback(
+        extracted,
+        {"field_confidence": extracted["field_confidence"]},
+        vision_fn=lambda *_a, **_k: {
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+        },
+    )
+    assert report["accepted"]["consignor"] == "Clean Planet Hooper"
+    assert report["accepted"]["consignee"] == "Aquamarine Contractors Inc."
+    merged = apply_accepted_fallback(extracted, report)
+    assert merged["consignor"] == "Clean Planet Hooper"
+    assert merged["consignee"] == "Aquamarine Contractors Inc."
+
+
+def test_letterhead_consignor_is_rescued_by_groq():
+    extracted = _extracted(
+        {"consignor": "California Materials, Inc.", "consignee": ""},
+        confidence={
+            "consignor": 0.85,
+            "consignee": 0.0,
+            "carrier": 0.95,
+            "bill_number": 0.95,
+            "bill_date": 0.95,
+            "origin": 0.95,
+            "destination": 0.95,
+            "freight_amount": 0.95,
+            "total_amount": 0.95,
+            "driver_name": 0.95,
+            "weight": 0.95,
+            "commodity_description": 0.95,
+            "invoice_number": 0.95,
+        },
+    )
+    extracted["carrier"] = "CALIFORNIA MATERIALS, INC."
+    plan = select_rescue_fields(extracted, {"field_confidence": extracted["field_confidence"]})
+    rescued = {row["field"] for row in plan}
+    assert "consignor" in rescued
+    report = run_vision_fallback(
+        extracted,
+        {"field_confidence": extracted["field_confidence"]},
+        vision_fn=lambda *_a, **_k: {
+            "consignor": "Clean Planet Hooper",
+            "consignee": "Aquamarine Contractors Inc.",
+            "bill_number": "9503-1",
+        },
+    )
+    assert report["accepted"]["consignor"] == "Clean Planet Hooper"
+    merged = apply_accepted_fallback(extracted, report)
+    assert merged["consignor"] == "Clean Planet Hooper"
+    assert merged["carrier"] == "CALIFORNIA MATERIALS, INC."
 
 
 def test_strong_deterministic_agreement_keeps_value():
@@ -376,3 +532,59 @@ def test_local_processor_does_not_call_groq_when_fallback_disabled(create_pdf, m
     assert result.raw_ocr.get("joint_decode") is not None
     assert result.raw_ocr.get("field_calibration") is not None
     assert result.raw_ocr.get("consistency_checks") is not None
+
+
+def test_crop_rescue_keeps_full_page_first():
+    from PIL import Image
+    from app.ocr.vision_fallback import crop_rescue_images
+
+    page = Image.new("RGB", (400, 400), "white")
+    images = crop_rescue_images(
+        [page],
+        {
+            "field_metadata": {
+                "vehicle_number": {"source_location": [20, 20, 80, 50]},
+            }
+        },
+        [{"field": "vehicle_number"}],
+        padding=10,
+    )
+    assert images[0].size == (400, 400)
+    assert len(images) == 2
+    assert images[1].size[0] < 400
+
+
+def test_crop_rescue_never_exceeds_groq_image_cap():
+    from PIL import Image
+    from app.ocr.vision_fallback import crop_rescue_images
+
+    page = Image.new("RGB", (400, 400), "white")
+    images = crop_rescue_images(
+        [page],
+        {
+            "field_metadata": {
+                "vehicle_number": {"source_location": [10, 10, 40, 40]},
+                "bill_date": {"source_location": [200, 10, 240, 40]},
+                "weight": {"source_location": [10, 200, 40, 240]},
+                "commodity_description": {"source_location": [200, 200, 240, 240]},
+            }
+        },
+        [
+            {"field": "vehicle_number"},
+            {"field": "bill_date"},
+            {"field": "weight"},
+            {"field": "commodity_description"},
+        ],
+        padding=5,
+    )
+    assert 1 <= len(images) <= 2
+    assert images[0].size == (400, 400)
+
+
+def test_crop_rescue_without_boxes_is_full_page_only():
+    from PIL import Image
+    from app.ocr.vision_fallback import crop_rescue_images
+
+    page = Image.new("RGB", (200, 200), "white")
+    images = crop_rescue_images([page], {}, [{"field": "vehicle_number"}])
+    assert images == [page]

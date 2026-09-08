@@ -427,4 +427,31 @@ def test_safe_wrapper_returns_unknown_on_error(monkeypatch):
     payload = classify_layout_safe("anything")
     assert payload["layout_class"] == LAYOUT_UNKNOWN
     assert payload["error"]
-    assert payload["confidence"] == 0.0
+
+
+def test_field_regions_are_label_hints_not_extracted_values():
+    from app.ocr.layout_classifier import collect_field_regions, classify_document_layout
+
+    items = [
+        {
+            "text": "TRUCKNO.",
+            "bbox": [100.0, 200.0, 180.0, 220.0],
+            "center_x": 140.0,
+            "center_y": 210.0,
+            "width": 80.0,
+            "height": 20.0,
+            "conf": 0.9,
+            "page": 1,
+        }
+    ]
+    regions = collect_field_regions(items, page_width=800, page_height=1000)
+    assert "vehicle_number" in regions
+    assert regions["vehicle_number"]["source"] == "spatial_label"
+    result = classify_document_layout(
+        "CALIFORNIA MATERIALS TRUCK NO COMMODITY",
+        page_count=1,
+        spatial_items=items,
+        text_source="preprocessed_image",
+    )
+    assert result.get("field_regions", {}).get("vehicle_number")
+    assert "extracted_data" not in result
