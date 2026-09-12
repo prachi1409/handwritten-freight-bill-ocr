@@ -70,6 +70,9 @@ CRITICAL_FIELDS = (
     "total_amount",
 )
 
+# Scale tickets often have no dollar amounts. A saved review still completes.
+REVIEW_OPTIONAL_CRITICAL = frozenset({"freight_amount", "total_amount"})
+
 
 def is_invalid_label_value(val: str) -> bool:
     """True if string is purely a form label header."""
@@ -560,7 +563,11 @@ def validate_extraction_data(data: Dict[str, Any]) -> Tuple[DocumentStatus, List
             if abs(item_sum - t_amt) > 0.05:
                 warnings.append(f"Line item sum (${item_sum:,.2f}) mismatches total amount (${t_amt:,.2f})")
 
-    if (data.get("manually_corrected") or data.get("reviewed")) and not missing_critical:
+    reviewed = bool(data.get("manually_corrected") or data.get("reviewed"))
+    blocking_missing = list(missing_critical)
+    if reviewed:
+        blocking_missing = [field for field in missing_critical if field not in REVIEW_OPTIONAL_CRITICAL]
+    if reviewed and not blocking_missing:
         return DocumentStatus.COMPLETED, warnings, max(overall_confidence, 0.95)
 
     status = DocumentStatus.REVIEW if warnings else DocumentStatus.COMPLETED

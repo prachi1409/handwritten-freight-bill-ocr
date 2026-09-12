@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     GROQ_VISION_FALLBACK_MAX_FIELDS: int = 8
     GROQ_VISION_FALLBACK_MIN_CONFIDENCE: float = 0.80
     GROQ_VISION_AMBIGUITY_MAX_GAP: float = 0.08
+    # Reprocess only: send the page to Groq Vision first, then gazetteer snap.
+    # New uploads stay cheap-first + rescue.
+    GROQ_VISION_PRIMARY_ON_REPROCESS: bool = True
     ENABLE_ENTITY_MATCHING: bool = True
     CANDIDATE_TOP_K: int = 5
     DECODE_BEAM_WIDTH: int = 8

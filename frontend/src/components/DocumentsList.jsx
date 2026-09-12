@@ -1,9 +1,9 @@
-import React, { useState, useEffect } from 'react';
-import { Upload, RefreshCw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, AlertCircle, Eye, Search, Trash2 } from 'lucide-react';
+import React, { useState, useEffect, useRef } from 'react';
+import { Upload, RefreshCw, RotateCcw, FolderSearch, FileText, CheckCircle2, Clock, AlertTriangle, AlertCircle, Eye, Search, Trash2 } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import UploadModal from './UploadModal';
 import ConfirmModal from './ConfirmModal';
-import { fetchDocuments, fetchDocumentStats, scanDocuments, deleteDocument, deleteAllDocuments } from '../api';
+import { fetchDocuments, fetchDocumentStats, scanDocuments, deleteDocument, deleteAllDocuments, reprocessAllDocuments } from '../api';
 
 const STAT_FILTERS = [
   { id: 'ALL', label: 'Total documents', key: 'total_documents', icon: FileText, iconBg: '#eff6ff', iconColor: '#2563eb' },
@@ -18,6 +18,63 @@ function confidenceTone(conf) {
   if (conf >= 0.7) return 'high';
   if (conf >= 0.4) return 'medium';
   return 'low';
+}
+
+function TableHScroll({ children, watch }) {
+  const topRef = useRef(null);
+  const bottomRef = useRef(null);
+  const syncing = useRef(false);
+  const [spacerWidth, setSpacerWidth] = useState(0);
+  const [overflows, setOverflows] = useState(false);
+
+  useEffect(() => {
+    const bottom = bottomRef.current;
+    if (!bottom) return undefined;
+
+    const measure = () => {
+      const width = bottom.scrollWidth;
+      setSpacerWidth(width);
+      setOverflows(width > bottom.clientWidth + 1);
+    };
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(bottom);
+    const table = bottom.querySelector('table');
+    if (table) observer.observe(table);
+    window.addEventListener('resize', measure);
+    return () => {
+      observer.disconnect();
+      window.removeEventListener('resize', measure);
+    };
+  }, [watch]);
+
+  const syncFrom = (source) => () => {
+    if (syncing.current) return;
+    const top = topRef.current;
+    const bottom = bottomRef.current;
+    if (!top || !bottom) return;
+    syncing.current = true;
+    if (source === 'top') bottom.scrollLeft = top.scrollLeft;
+    else top.scrollLeft = bottom.scrollLeft;
+    syncing.current = false;
+  };
+
+  return (
+    <div className="table-scroll-dual">
+      <div
+        className={`table-scroll-top${overflows ? '' : ' is-idle'}`}
+        ref={topRef}
+        onScroll={syncFrom('top')}
+        aria-hidden={!overflows}
+      >
+        <div className="table-scroll-top-spacer" style={{ width: spacerWidth }} />
+      </div>
+      <div className="table-container" ref={bottomRef} onScroll={syncFrom('bottom')}>
+        {children}
+      </div>
+    </div>
+  );
 }
 
 export default function DocumentsList({ onSelectDocument }) {
@@ -39,8 +96,10 @@ export default function DocumentsList({ onSelectDocument }) {
   const [deletingId, setDeletingId] = useState(null);
   const [isDeletingAll, setIsDeletingAll] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
+  const [pendingReprocessAll, setPendingReprocessAll] = useState(false);
+  const [isReprocessingAll, setIsReprocessingAll] = useState(false);
 
-  const busy = isLoading || isScanning || isDeletingAll || Boolean(deletingId);
+  const busy = isLoading || isScanning || isDeletingAll || isReprocessingAll || Boolean(deletingId);
   const totalCount = stats.total_documents || documents.length;
 
   const loadData = async (query) => {
@@ -131,6 +190,21 @@ export default function DocumentsList({ onSelectDocument }) {
     }
   };
 
+  const handleConfirmReprocessAll = async () => {
+    setIsReprocessingAll(true);
+    setError(null);
+    try {
+      const result = await reprocessAllDocuments();
+      setBannerMessage(result.message || `Reprocessed ${result.processed_count ?? totalCount} bills.`);
+      setPendingReprocessAll(false);
+      await loadData();
+    } catch (err) {
+      setError(err.message || 'Failed to reprocess all documents.');
+    } finally {
+      setIsReprocessingAll(false);
+    }
+  };
+
   const filteredDocuments = documents.filter(doc => {
     const status = (doc.status || '').toUpperCase();
     if (selectedFilter === 'ALL') return true;
@@ -172,7 +246,7 @@ export default function DocumentsList({ onSelectDocument }) {
           <button
             className="btn btn-primary"
             onClick={() => setIsUploadOpen(true)}
-            disabled={isDeletingAll}
+            disabled={isDeletingAll || isReprocessingAll}
           >
             <Upload size={15} />
             <span>Upload bill</span>
@@ -216,9 +290,19 @@ export default function DocumentsList({ onSelectDocument }) {
           </button>
 
           <button
+            className="btn btn-secondary"
+            onClick={() => setPendingReprocessAll(true)}
+            disabled={busy || !totalCount}
+            title="Reprocess every bill with Groq Vision as the first field layer"
+          >
+            {isReprocessingAll ? <div className="spinner spinner-dark" /> : <RotateCcw size={15} />}
+            <span>{isReprocessingAll ? 'Reprocessing…' : 'Reprocess all'}</span>
+          </button>
+
+          <button
             className="btn btn-ghost-danger"
             onClick={() => setPendingDelete({ type: 'all' })}
-            disabled={isDeletingAll || isLoading || isScanning || !totalCount}
+            disabled={isDeletingAll || isReprocessingAll || isLoading || isScanning || !totalCount}
             title="Delete every freight bill and stored file"
           >
             {isDeletingAll ? <div className="spinner spinner-dark" /> : <Trash2 size={15} />}
@@ -324,7 +408,7 @@ export default function DocumentsList({ onSelectDocument }) {
             )}
           </div>
         ) : (
-          <div className="table-container">
+          <TableHScroll watch={filteredDocuments.length}>
             <table className="data-table">
               <thead>
                 <tr>
@@ -404,7 +488,7 @@ export default function DocumentsList({ onSelectDocument }) {
                             className="btn btn-danger btn-icon"
                             style={{ width: '2.15rem', height: '2.15rem' }}
                             onClick={() => setPendingDelete({ type: 'one', doc })}
-                            disabled={deletingId === doc.id || isDeletingAll}
+                            disabled={deletingId === doc.id || isDeletingAll || isReprocessingAll}
                             title="Delete document"
                             aria-label={`Delete ${filename}`}
                           >
@@ -421,7 +505,7 @@ export default function DocumentsList({ onSelectDocument }) {
                 })}
               </tbody>
             </table>
-          </div>
+          </TableHScroll>
         )}
       </div>
 
@@ -440,12 +524,26 @@ export default function DocumentsList({ onSelectDocument }) {
             : `“${deleteFilename}” will be removed from the list and storage. This cannot be undone.`
         }
         confirmLabel={pendingDelete?.type === 'all' ? 'Delete all' : 'Delete'}
+        busyLabel="Deleting…"
         danger
         isBusy={isDeletingAll || Boolean(deletingId)}
         onCancel={() => {
           if (!isDeletingAll && !deletingId) setPendingDelete(null);
         }}
         onConfirm={handleConfirmDelete}
+      />
+
+      <ConfirmModal
+        isOpen={pendingReprocessAll}
+        title="Reprocess all freight bills?"
+        description={`This re-runs OCR on ${totalCount} bill${totalCount === 1 ? '' : 's'} using Groq Vision, then snaps fields to the gazetteer. Extracted fields are overwritten — saved review corrections are not kept. This can take several minutes.`}
+        confirmLabel="Reprocess all"
+        busyLabel="Reprocessing…"
+        isBusy={isReprocessingAll}
+        onCancel={() => {
+          if (!isReprocessingAll) setPendingReprocessAll(false);
+        }}
+        onConfirm={handleConfirmReprocessAll}
       />
     </div>
   );

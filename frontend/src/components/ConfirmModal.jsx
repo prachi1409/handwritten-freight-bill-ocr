@@ -7,6 +7,7 @@ export default function ConfirmModal({
   description,
   confirmLabel = 'Confirm',
   cancelLabel = 'Cancel',
+  busyLabel = 'Working…',
   danger = false,
   isBusy = false,
   onConfirm,
@@ -68,7 +69,7 @@ export default function ConfirmModal({
             disabled={isBusy}
           >
             {isBusy ? <div className="spinner" /> : null}
-            <span>{isBusy ? 'Deleting…' : confirmLabel}</span>
+            <span>{isBusy ? busyLabel : confirmLabel}</span>
           </button>
         </div>
       </div>

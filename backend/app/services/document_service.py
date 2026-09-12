@@ -17,6 +17,7 @@ from app.ingestion.hasher import calculate_file_hash
 from app.ingestion.validator import validate_pdf
 from app.ingestion.convert import ALLOWED_EXTENSIONS, ensure_pdf
 from app.ocr.factory import get_ocr_processor
+from app.ocr.runtime import groq_vision_primary
 from app.ocr.calibration import apply_calibration_to_status, attach_field_calibration, record_review_calibration
 from app.ocr.consistency import apply_consistency_to_status, attach_consistency_checks
 from app.ocr.normalizer import normalize_freight_data, validate_extraction_status
@@ -351,9 +352,67 @@ class DocumentService:
         return doc
 
     @staticmethod
+    def promote_reviewed_documents(db: Session) -> int:
+        """Mark already-saved reviews COMPLETED using current validation (scale tickets without amounts)."""
+        rows = (
+            db.query(Document)
+            .filter(
+                Document.manual_corrections.is_(True),
+                Document.status == DocumentStatus.REVIEW,
+            )
+            .all()
+        )
+        promoted = 0
+        for doc in rows:
+            data = dict(doc.extracted_data or {})
+            data["manually_corrected"] = True
+            data["reviewed"] = True
+            status, warnings = validate_extraction_status(data, data.get("ocr_confidence"))
+            if status != DocumentStatus.COMPLETED:
+                continue
+            doc.status = status
+            doc.validation_warnings = warnings
+            doc.error_message = "; ".join(warnings) if warnings else None
+            promoted += 1
+        db.commit()
+        logger.info("Promoted %s reviewed freight bill(s) to COMPLETED.", promoted)
+        return promoted
+
+    @staticmethod
     def reprocess_document(db: Session, document_id: UUID) -> Document:
-        """Reprocess document by running full OCR extraction and validation again."""
-        return DocumentService.process_document(db=db, document_id=document_id)
+        """Reprocess with Groq Vision as the first field layer; new uploads stay cheap-first."""
+        token = groq_vision_primary.set(True)
+        try:
+            return DocumentService.process_document(db=db, document_id=document_id)
+        finally:
+            groq_vision_primary.reset(token)
+
+    @staticmethod
+    def reprocess_all_documents(db: Session) -> Dict[str, int]:
+        """Reprocess every document sequentially (Groq-primary). One failure does not stop the rest."""
+        ids = [row[0] for row in db.query(Document.id).order_by(Document.created_at.asc()).all()]
+        processed = 0
+        failed = 0
+        for document_id in ids:
+            try:
+                DocumentService.reprocess_document(db=db, document_id=document_id)
+                processed += 1
+            except Exception:
+                logger.exception("Reprocess-all failed for document %s", document_id)
+                failed += 1
+            finally:
+                db.expire_all()
+        logger.info(
+            "Reprocessed all freight bills: %s succeeded, %s failed, %s total.",
+            processed,
+            failed,
+            len(ids),
+        )
+        return {
+            "processed_count": processed,
+            "failed_count": failed,
+            "total_count": len(ids),
+        }
 
     @staticmethod
     def delete_document(db: Session, document_id: UUID) -> bool:

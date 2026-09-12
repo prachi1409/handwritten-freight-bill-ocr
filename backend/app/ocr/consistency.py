@@ -6,7 +6,7 @@ import re
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.core.config import settings
-from app.ocr.matching import _collapse, lookup_zip, parse_place
+from app.ocr.matching import _collapse, is_destination_copied_from_origin, lookup_zip, parse_place
 from app.ocr.normalizer import normalize_currency
 from app.ocr.priors import associated_given, associated_pair, load_priors
 from app.ocr.zip_data import REGIONAL_ZIPS
@@ -21,6 +21,7 @@ CODE_LINE_ITEM_ARITHMETIC = "LINE_ITEM_QTY_RATE_AMOUNT_MISMATCH"
 CODE_NEGATIVE_VALUE = "NEGATIVE_VALUE"
 CODE_HISTORICAL_CONFLICT = "HISTORICAL_RELATIONSHIP_CONFLICT"
 CODE_ORIGIN_DEST_STATE_MISMATCH = "ORIGIN_DESTINATION_STATE_MISMATCH"
+CODE_DESTINATION_COPIED_FROM_ORIGIN = "DESTINATION_COPIED_FROM_ORIGIN"
 CODE_DUPLICATE_TAG = "DUPLICATE_TAG"
 CODE_DUPLICATE_TAG_DATE = "DUPLICATE_TAG_DATE"
 
@@ -37,7 +38,7 @@ VALIDATE_OWNED_CODES = frozenset(
 )
 # New impossibilities that should join the existing warning→REVIEW path.
 REVIEW_ERROR_CODES = frozenset(
-    {CODE_CONSIGNOR_EQUALS_CONSIGNEE, CODE_NEGATIVE_VALUE}
+    {CODE_CONSIGNOR_EQUALS_CONSIGNEE, CODE_NEGATIVE_VALUE, CODE_DESTINATION_COPIED_FROM_ORIGIN}
 )
 
 _SIGNED_NUMBER = re.compile(
@@ -503,6 +504,23 @@ def _check_origin_destination_state(data: Dict[str, Any]) -> List[Dict[str, Any]
     ]
 
 
+def _check_destination_copied_from_origin(data: Dict[str, Any]) -> List[Dict[str, Any]]:
+    if not is_destination_copied_from_origin(data):
+        return []
+    origin = data.get("origin")
+    destination = data.get("destination")
+    return [
+        _finding(
+            CODE_DESTINATION_COPIED_FROM_ORIGIN,
+            SEVERITY_ERROR,
+            f"Destination ({destination}) copies origin or letterhead city ({origin}).",
+            ("origin", "destination"),
+            {"origin": origin, "destination": destination},
+            expected_relationship="destination is a distinct delivery site",
+        )
+    ]
+
+
 def _line_item_tags(data: Dict[str, Any]) -> List[str]:
     tags: List[str] = []
     for item in data.get("line_items") or []:
@@ -587,6 +605,7 @@ def check_bill_consistency(
     checks.extend(_check_line_items(data))
     checks.extend(_check_negative_values(data))
     checks.extend(_check_origin_destination_state(data))
+    checks.extend(_check_destination_copied_from_origin(data))
     checks.extend(_check_duplicate_tags(data, peer_tickets))
     checks.extend(_check_historical(data, priors))
     return {

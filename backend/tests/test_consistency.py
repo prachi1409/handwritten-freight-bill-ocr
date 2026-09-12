@@ -3,6 +3,7 @@
 from app.db.models import DocumentStatus
 from app.ocr.consistency import (
     CODE_CONSIGNOR_EQUALS_CONSIGNEE,
+    CODE_DESTINATION_COPIED_FROM_ORIGIN,
     CODE_FREIGHT_EXCEEDS_TOTAL,
     CODE_HISTORICAL_CONFLICT,
     CODE_LINE_ITEM_ARITHMETIC,
@@ -34,6 +35,19 @@ def test_different_parties_do_not_trigger_equality():
         priors=empty_priors(),
     )
     assert CODE_CONSIGNOR_EQUALS_CONSIGNEE not in _codes(payload)
+
+
+def test_destination_copied_from_origin_is_flagged():
+    payload = check_bill_consistency(
+        {"origin": "North Hooper", "destination": "Stockton"},
+        priors=empty_priors(),
+    )
+    assert CODE_DESTINATION_COPIED_FROM_ORIGIN in _codes(payload)
+    ok = check_bill_consistency(
+        {"origin": "North Hooper", "destination": "Discovery Bay"},
+        priors=empty_priors(),
+    )
+    assert CODE_DESTINATION_COPIED_FROM_ORIGIN not in _codes(ok)
 
 
 def test_freight_exceeds_total_is_detected():

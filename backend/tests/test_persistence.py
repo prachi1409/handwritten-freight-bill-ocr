@@ -263,6 +263,90 @@ def test_delete_all_documents_removes_rows_and_files(client, db_session, tmp_pat
     assert empty.json()["deleted_count"] == 0
 
 
+def test_reprocess_all_documents_runs_each_id(client, db_session, monkeypatch):
+    """POST /api/v1/documents/reprocess-all reprocesses every document sequentially."""
+    ids = []
+    for index in (1, 2):
+        doc = Document(
+            original_filename=f"reprocess_all_{index}.pdf",
+            stored_filename=f"reprocess_all_{index}.pdf",
+            stored_path=f"/tmp/reprocess_all_{index}.pdf",
+            file_hash=f"hash_reprocess_all_{index}",
+            status=DocumentStatus.REVIEW,
+        )
+        db_session.add(doc)
+        db_session.flush()
+        ids.append(doc.id)
+    db_session.commit()
+
+    called = []
+
+    def fake_reprocess(db, document_id):
+        called.append(document_id)
+        row = db.query(Document).filter(Document.id == document_id).first()
+        row.status = DocumentStatus.COMPLETED
+        db.commit()
+        return row
+
+    monkeypatch.setattr(DocumentService, "reprocess_document", staticmethod(fake_reprocess))
+
+    response = client.post("/api/v1/documents/reprocess-all")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 2
+    assert body["processed_count"] == 2
+    assert body["failed_count"] == 0
+    assert set(called) == set(ids)
+
+
+def test_reprocess_all_continues_after_one_failure(client, db_session, monkeypatch):
+    """One failed reprocess must not skip the remaining bills."""
+    ids = []
+    for index in (1, 2):
+        doc = Document(
+            original_filename=f"reprocess_all_fail_{index}.pdf",
+            stored_filename=f"reprocess_all_fail_{index}.pdf",
+            stored_path=f"/tmp/reprocess_all_fail_{index}.pdf",
+            file_hash=f"hash_reprocess_all_fail_{index}",
+            status=DocumentStatus.REVIEW,
+        )
+        db_session.add(doc)
+        db_session.flush()
+        ids.append(doc.id)
+    db_session.commit()
+
+    called = []
+
+    def fake_reprocess(db, document_id):
+        called.append(document_id)
+        if document_id == ids[0]:
+            raise RuntimeError("groq timeout")
+        row = db.query(Document).filter(Document.id == document_id).first()
+        row.status = DocumentStatus.COMPLETED
+        db.commit()
+        return row
+
+    monkeypatch.setattr(DocumentService, "reprocess_document", staticmethod(fake_reprocess))
+
+    response = client.post("/api/v1/documents/reprocess-all")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 2
+    assert body["processed_count"] == 1
+    assert body["failed_count"] == 1
+    assert called == ids
+
+
+def test_reprocess_all_empty_list(client, db_session):
+    """POST /api/v1/documents/reprocess-all with no documents is a no-op."""
+    response = client.post("/api/v1/documents/reprocess-all")
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total_count"] == 0
+    assert body["processed_count"] == 0
+    assert body["failed_count"] == 0
+
+
 def test_translate_endpoint_is_display_only(client, db_session):
     """POST /translate returns display values and does not rewrite extracted_data."""
     doc = Document(

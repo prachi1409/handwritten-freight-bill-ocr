@@ -92,6 +92,16 @@ export async function reprocessDocument(id) {
 }
 
 /**
+ * Reprocess every ingested document with Groq Vision as the first field layer.
+ */
+export async function reprocessAllDocuments() {
+  const response = await fetch(`${API_BASE_URL}/documents/reprocess-all`, {
+    method: 'POST',
+  });
+  return handleResponse(response);
+}
+
+/**
  * Submit manual review corrections for a document.
  */
 export async function submitDocumentReview(id, extractedData) {

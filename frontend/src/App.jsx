@@ -12,9 +12,10 @@ export default function App() {
 
       <main className={`main-content${selectedDocumentId ? ' wide' : ''}`}>
         {selectedDocumentId ? (
-          <DocumentDetail 
-            documentId={selectedDocumentId} 
-            onBack={() => setSelectedDocumentId(null)} 
+          <DocumentDetail
+            documentId={selectedDocumentId}
+            onBack={() => setSelectedDocumentId(null)}
+            onSelectDocument={(id) => setSelectedDocumentId(id)}
           />
         ) : (
           <DocumentsList 

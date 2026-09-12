@@ -240,7 +240,7 @@ def generate_field_candidates(
 
         prior_map = _prior_index(field, working, prior_store)
         route_context = _has_prior_context(field, working) and bool(prior_map)
-        if (not query or is_weak_entity_stub(field, data.get(field))) and route_context and _inject_priors_enabled():
+        if (not query or is_weak_entity_stub(field, data.get(field), working)) and route_context and _inject_priors_enabled():
             injected = 0
             min_count = _inject_min_count()
             for label, count, _prob in _prior_rows_for_field(field, working, prior_store):
@@ -277,11 +277,11 @@ def generate_field_candidates(
         )
         out[field] = ranked[:limit]
         if out[field] and (
-            not _usable_query(field, working.get(field)) or is_weak_entity_stub(field, working.get(field))
+            not _usable_query(field, working.get(field)) or is_weak_entity_stub(field, working.get(field), working)
         ):
             pick = out[field][0]
             for row in out[field]:
-                if not is_weak_entity_stub(field, row.get("value")):
+                if not is_weak_entity_stub(field, row.get("value"), working):
                     pick = row
                     break
             working[field] = pick["value"]

@@ -161,6 +161,56 @@ def test_unknown_place_salad_is_a_weak_stub():
     assert is_weak_entity_stub("destination", "Htth u Uol/raels 30 Pelnr") is True
     assert is_weak_entity_stub("origin", "Stockton, CA") is False
     assert is_weak_entity_stub("destination", "Discovery Bay, CA") is False
+    assert is_weak_entity_stub("destination", "Concord") is True
+    assert is_weak_entity_stub("destination", "Cannon Landfill") is False
+
+
+def test_cmat_ticket_aliases_cannon_and_corone():
+    from app.ocr.matching import apply_entity_matching, _empty_memory
+
+    memory = _empty_memory()
+    out = apply_entity_matching(
+        {
+            "consignor": "Bellmarine",
+            "consignee": "Colonel9Co",
+            "origin": "Bellmarine",
+            "destination": "Concord",
+        },
+        memory=memory,
+    )
+    assert out["consignor"] == "Bell Marine"
+    assert out["consignee"] == "CORONE & CO"
+    assert out["origin"] == "Bell Marine"
+    assert out["destination"] == "Cannon Landfill"
+    out2 = apply_entity_matching({"destination": "Cannon landfill"}, memory=_empty_memory())
+    assert out2["destination"] == "Cannon Landfill"
+
+
+def test_destination_copied_from_origin_is_cleared_or_replaced():
+    from app.ocr.matching import apply_entity_matching, is_destination_copied_from_origin, is_weak_entity_stub, _empty_memory
+
+    assert is_destination_copied_from_origin({"origin": "North Hooper Stockton", "destination": "Stockton"}) is True
+    assert is_destination_copied_from_origin({"origin": "North Hooper", "destination": "Stockton"}) is True
+    assert is_destination_copied_from_origin({"origin": "North Hooper", "destination": "Discovery Bay"}) is False
+    assert is_destination_copied_from_origin({"origin": "Bell Marine", "destination": "Cannon Landfill"}) is False
+    assert is_weak_entity_stub("destination", "Stockton", {"origin": "North Hooper", "destination": "Stockton"}) is True
+
+    memory = _empty_memory()
+    cleared = apply_entity_matching(
+        {"origin": "North Hooper", "destination": "Stockton"},
+        memory=memory,
+    )
+    assert not (cleared.get("destination") or "").strip()
+
+    replaced = apply_entity_matching(
+        {
+            "origin": "North Hooper Stockton",
+            "destination": "Stockton",
+            "consignee": "Aquamarine Discovery Bay",
+        },
+        memory=_empty_memory(),
+    )
+    assert "Discovery" in (replaced.get("destination") or "")
 
 
 def test_review_alias_snaps_far_ocr():

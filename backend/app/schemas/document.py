@@ -125,3 +125,11 @@ class DocumentDeleteAllResponse(BaseModel):
     """Result of deleting every freight-bill record and stored file."""
     deleted_count: int
     message: str
+
+
+class DocumentReprocessAllResponse(BaseModel):
+    """Result of reprocessing every freight-bill document."""
+    processed_count: int
+    failed_count: int
+    total_count: int
+    message: str

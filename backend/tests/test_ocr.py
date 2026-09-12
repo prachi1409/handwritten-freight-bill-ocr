@@ -225,3 +225,76 @@ def test_submit_document_review_partial_corrections_remains_review(client, db_se
     updated = response.json()
     assert updated["status"] == "REVIEW"
     assert updated["error_message"] is not None
+
+
+def test_submit_reviewed_scale_ticket_without_amounts_completes(client, db_session):
+    """CMAT scale tickets have no freight/total; a saved review should still complete."""
+    doc = Document(
+        original_filename="cmat_scale.pdf",
+        stored_filename="cmat_scale.pdf",
+        stored_path="cmat_scale.pdf",
+        file_hash="hash_review_scale_333",
+        status=DocumentStatus.REVIEW,
+        error_message="Missing critical field(s): freight_amount, total_amount",
+    )
+    db_session.add(doc)
+    db_session.commit()
+
+    corrections = {
+        "bill_number": "1249-3",
+        "consignor": "Clean Planet Hooper",
+        "consignee": "Palm Orwood Tract",
+        "origin": "North Hooper St",
+        "destination": "Discovery Bay, CA",
+        "weight": "187.08",
+        "quantity": "7",
+    }
+
+    response = client.put(f"/api/v1/documents/{doc.id}/review", json={"extracted_data": corrections})
+    assert response.status_code == 200
+    updated = response.json()
+    assert updated["status"] == "COMPLETED"
+    assert updated["manual_corrections"] is True
+
+
+def test_groq_primary_is_off_during_pytest():
+    from app.ocr.runtime import groq_vision_primary, groq_vision_primary_enabled
+
+    token = groq_vision_primary.set(True)
+    try:
+        assert groq_vision_primary_enabled() is False
+    finally:
+        groq_vision_primary.reset(token)
+
+
+def test_upload_path_does_not_call_groq_primary(monkeypatch, create_pdf):
+    from app.ocr.local_processor import LocalOCRProcessor
+
+    def boom(*_a, **_k):
+        raise AssertionError("Groq Vision primary must not run on upload")
+
+    monkeypatch.setattr("app.ocr.groq_extractor.extract_fields_with_groq_vision", boom)
+    pdf_path = create_pdf("upload_no_groq_primary.pdf", "Bill No: FB-1\nShipper: Alpha\nFreight: $10.00")
+    LocalOCRProcessor().process_document(pdf_path)
+
+
+def test_reprocess_flag_uses_groq_vision_primary(monkeypatch, create_pdf):
+    from app.ocr.local_processor import LocalOCRProcessor
+    import app.ocr.local_processor as lp
+
+    monkeypatch.setattr(lp, "groq_vision_primary_enabled", lambda: True)
+
+    def fake_vision(_images, **_k):
+        return {
+            "destination": "Discovery Bay",
+            "consignor": "Bell Marine",
+            "consignee": "Aquamarine",
+            "origin": "North Hooper",
+        }
+
+    monkeypatch.setattr("app.ocr.groq_extractor.extract_fields_with_groq_vision", fake_vision)
+    pdf_path = create_pdf("reprocess_groq_primary.pdf", "Bill No: FB-2\nFreight: $10.00")
+    result = LocalOCRProcessor().process_document(pdf_path)
+    assert (result.raw_ocr or {}).get("groq_vision_primary") is True
+    assert str((result.raw_ocr or {}).get("field_source") or "").startswith("groq-vision-primary")
+    assert "Discovery" in str(result.extracted_data.get("destination") or "")

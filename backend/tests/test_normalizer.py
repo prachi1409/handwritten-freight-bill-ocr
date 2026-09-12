@@ -152,6 +152,23 @@ def test_validate_extraction_status_missing_optional_field_still_completed():
     assert warnings == []
 
 
+def test_reviewed_scale_ticket_without_amounts_completes():
+    """A saved review on a scale ticket with no freight/total is COMPLETED."""
+    data = {
+        "bill_number": "1249-3",
+        "consignor": "Clean Planet Hooper",
+        "consignee": "Palm Orwood Tract",
+        "origin": "North Hooper St",
+        "destination": "Discovery Bay, CA",
+        "manually_corrected": True,
+        "reviewed": True,
+    }
+    status, warnings = validate_extraction_status(data, confidence=0.85)
+
+    assert status == DocumentStatus.COMPLETED
+    assert any("freight_amount" in w or "total_amount" in w for w in warnings)
+
+
 def test_line_items_amount_mismatch_flags_review():
     """Verify mismatch between line item amounts sum and total_amount flags document for REVIEW."""
     data = {

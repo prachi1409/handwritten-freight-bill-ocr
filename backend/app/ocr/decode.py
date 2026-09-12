@@ -327,7 +327,7 @@ def _apply_selected_enabled() -> bool:
     return bool(getattr(settings, "DECODE_APPLY_SELECTED", True))
 
 
-def _ocr_guard_blocks(field: str, selected_value: Any, field_candidates: Optional[Dict[str, List[Dict[str, Any]]]]) -> bool:
+def _ocr_guard_blocks(field: str, selected_value: Any, field_candidates: Optional[Dict[str, List[Dict[str, Any]]]] = None, fields: Optional[Dict[str, Any]] = None) -> bool:
     from app.ocr.matching import _is_harvestable_name, is_weak_entity_stub
 
     pool = (field_candidates or {}).get(field) or []
@@ -335,7 +335,7 @@ def _ocr_guard_blocks(field: str, selected_value: Any, field_candidates: Optiona
         return False
     best = max(pool, key=lambda row: float(row.get("fuzzy_score") or 0.0))
     best_value = str(best.get("value") or "")
-    if not _is_harvestable_name(field, best_value) or is_weak_entity_stub(field, best_value):
+    if not _is_harvestable_name(field, best_value) or is_weak_entity_stub(field, best_value, fields):
         return False
     from app.ocr.normalizer import looks_like_ocr_junk
 
@@ -390,7 +390,7 @@ def apply_joint_selection(
                     "selected": value,
                 }
             continue
-        if _ocr_guard_blocks(field, value, field_candidates):
+        if _ocr_guard_blocks(field, value, field_candidates, out):
             report["fields"][field] = {
                 "status": "ocr_guard",
                 "previous": previous,

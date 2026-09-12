@@ -1,9 +1,9 @@
 import React, { useState, useEffect } from 'react';
-import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, Cpu, MapPin, Package, DollarSign, Truck, Languages, Download } from 'lucide-react';
+import { ArrowLeft, RefreshCw, FileText, CheckCircle2, AlertCircle, Sparkles, Edit3, Save, X, Plus, Trash2, ExternalLink, ListFilter, Hash, Calendar, Activity, ChevronDown, ChevronUp, ChevronLeft, ChevronRight, Cpu, MapPin, Package, DollarSign, Truck, Languages, Download } from 'lucide-react';
 import StatusBadge from './StatusBadge';
 import ReviewerFieldPanel from './ReviewerFieldPanel';
 import ConfirmModal from './ConfirmModal';
-import { fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl, getDocumentPreviewUrl, downloadExtractionReport, deleteDocument, translateDocumentFields } from '../api';
+import { fetchDocuments, fetchDocumentById, reprocessDocument, submitDocumentReview, getDocumentFileUrl, getDocumentPreviewUrl, downloadExtractionReport, deleteDocument, translateDocumentFields } from '../api';
 import {
   buildReviewReasons,
   isFieldPresent,
@@ -25,7 +25,7 @@ const WIDE_FIELDS = new Set(['commodity_description', 'special_instructions', 'd
 const OPTIONAL_EMPTY_FIELDS = new Set(['fuel_surcharge', 'handling_charge']);
 const REQUIRED_FIELDS = new Set(['bill_number', 'consignor', 'consignee', 'origin', 'destination', 'total_amount']);
 
-export default function DocumentDetail({ documentId, onBack }) {
+export default function DocumentDetail({ documentId, onBack, onSelectDocument }) {
   const [doc, setDoc] = useState(null);
   const [isLoading, setIsLoading] = useState(true);
   const [isReprocessing, setIsReprocessing] = useState(false);
@@ -41,6 +41,7 @@ export default function DocumentDetail({ documentId, onBack }) {
   const [isTranslating, setIsTranslating] = useState(false);
   const [isDownloadingReport, setIsDownloadingReport] = useState(false);
   const [isDeleteOpen, setIsDeleteOpen] = useState(false);
+  const [neighborIds, setNeighborIds] = useState([]);
 
   const loadDocument = async () => {
     if (!documentId) {
@@ -68,6 +69,8 @@ export default function DocumentDetail({ documentId, onBack }) {
     setShowEnglish(false);
     setEnglishFields(null);
     setIsDeleteOpen(false);
+    setIsEditing(false);
+    setSuccessMessage(null);
     if (documentId) {
       loadDocument();
     } else {
@@ -75,6 +78,79 @@ export default function DocumentDetail({ documentId, onBack }) {
       setError("No document ID specified.");
     }
   }, [documentId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchDocuments()
+      .then((docs) => {
+        if (!cancelled && Array.isArray(docs)) {
+          setNeighborIds(docs.map((row) => row.id).filter(Boolean));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setNeighborIds([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [documentId]);
+
+  const currentIndex = neighborIds.findIndex((id) => String(id) === String(documentId));
+  const prevId = currentIndex > 0 ? neighborIds[currentIndex - 1] : null;
+  const nextId = currentIndex >= 0 && currentIndex < neighborIds.length - 1
+    ? neighborIds[currentIndex + 1]
+    : null;
+  const navBusy = isEditing || isSaving || isDeleting || isReprocessing;
+
+  const goToDocument = (id) => {
+    if (!id || !onSelectDocument || navBusy) return;
+    onSelectDocument(id);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (event) => {
+      if (navBusy || isDeleteOpen) return;
+      const tag = (event.target && event.target.tagName) || '';
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+      if (event.key === 'ArrowLeft' && prevId) {
+        event.preventDefault();
+        goToDocument(prevId);
+      } else if (event.key === 'ArrowRight' && nextId) {
+        event.preventDefault();
+        goToDocument(nextId);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [prevId, nextId, navBusy, isDeleteOpen, onSelectDocument]);
+
+  const renderReportNav = () => (
+    <div className="report-nav">
+      <button
+        type="button"
+        className="btn btn-secondary btn-icon"
+        onClick={() => goToDocument(prevId)}
+        disabled={!prevId || navBusy}
+        title="Previous bill"
+        aria-label="Previous bill"
+      >
+        <ChevronLeft size={16} />
+      </button>
+      <span className="report-nav-count">
+        {currentIndex >= 0 ? `${currentIndex + 1} of ${neighborIds.length}` : '—'}
+      </span>
+      <button
+        type="button"
+        className="btn btn-secondary btn-icon"
+        onClick={() => goToDocument(nextId)}
+        disabled={!nextId || navBusy}
+        title="Next bill"
+        aria-label="Next bill"
+      >
+        <ChevronRight size={16} />
+      </button>
+    </div>
+  );
 
   const handleStartEditing = () => {
     setEditFormData(JSON.parse(JSON.stringify(doc?.extracted_data || {})));
@@ -190,7 +266,15 @@ export default function DocumentDetail({ documentId, onBack }) {
     setSuccessMessage(null);
     try {
       await deleteDocument(documentId);
-      onBack();
+      const remaining = neighborIds.filter((id) => String(id) !== String(documentId));
+      const nextAfterDelete = remaining[currentIndex] || remaining[currentIndex - 1] || null;
+      if (nextAfterDelete && onSelectDocument) {
+        setIsDeleting(false);
+        setIsDeleteOpen(false);
+        onSelectDocument(nextAfterDelete);
+      } else {
+        onBack();
+      }
     } catch (err) {
       setIsDeleting(false);
       setIsDeleteOpen(false);
@@ -278,10 +362,15 @@ export default function DocumentDetail({ documentId, onBack }) {
   if (isLoading) {
     return (
       <div>
-        <button className="btn btn-secondary" onClick={onBack} style={{ marginBottom: '1.25rem' }}>
-          <ArrowLeft size={15} />
-          <span>Back to Documents</span>
-        </button>
+        <div className="detail-toolbar">
+          <div className="detail-nav-cluster">
+            <button className="btn btn-secondary" onClick={onBack}>
+              <ArrowLeft size={15} />
+              <span>Back to Documents</span>
+            </button>
+            {renderReportNav()}
+          </div>
+        </div>
         <div className="card">
           <div className="state-box">
             <div className="spinner spinner-dark" style={{ width: '2.5rem', height: '2.5rem' }} />
@@ -295,10 +384,15 @@ export default function DocumentDetail({ documentId, onBack }) {
   if (error || !doc) {
     return (
       <div>
-        <button className="btn btn-secondary" onClick={onBack} style={{ marginBottom: '1.25rem' }}>
-          <ArrowLeft size={15} />
-          <span>Back to Documents</span>
-        </button>
+        <div className="detail-toolbar">
+          <div className="detail-nav-cluster">
+            <button className="btn btn-secondary" onClick={onBack}>
+              <ArrowLeft size={15} />
+              <span>Back to Documents</span>
+            </button>
+            {renderReportNav()}
+          </div>
+        </div>
         <div className="card">
           <div className="state-box">
             <div className="state-icon" style={{ backgroundColor: '#fef2f2', color: '#dc2626' }}>
@@ -356,10 +450,13 @@ export default function DocumentDetail({ documentId, onBack }) {
     <div>
       {/* Back Button & Action Toolbar */}
       <div className="detail-toolbar">
-        <button className="btn btn-secondary" onClick={onBack}>
-          <ArrowLeft size={16} />
-          <span>Back to documents</span>
-        </button>
+        <div className="detail-nav-cluster">
+          <button className="btn btn-secondary" onClick={onBack}>
+            <ArrowLeft size={16} />
+            <span>Back to documents</span>
+          </button>
+          {renderReportNav()}
+        </div>
 
         <div className="detail-toolbar-actions">
           {!isEditing ? (

@@ -13,6 +13,7 @@ import pymupdf as fitz
 from app.core.config import settings
 from app.ocr.base import BaseOCRProcessor, OCRResult
 from app.ocr.field_extractor import FREIGHT_FIELD_KEYS, extract_freight_fields_from_text, pick_extracted_value
+from app.ocr.runtime import groq_vision_primary_enabled
 from app.ocr.spatial_extractor import extract_fields_via_spatial_layout
 from app.ocr.vision_fallback import (
     apply_accepted_fallback,
@@ -207,7 +208,21 @@ class LocalOCRProcessor(BaseOCRProcessor):
             raw_dict = extract_freight_fields_from_text(raw_text)
 
         field_source = "regex/spatial"
+        skip_vision_fallback = False
         logger.info("[OCR Flow] Field source for '%s': regex/spatial (Groq Vision reserved for later fallback)", path.name)
+
+        if groq_vision_primary_enabled():
+            from app.ocr.groq_extractor import apply_vision_fields, extract_fields_with_groq_vision
+
+            logger.info("[OCR Flow] Reprocess Groq Vision primary for '%s'", path.name)
+            vision_dict = extract_fields_with_groq_vision(page_images)
+            if vision_dict:
+                raw_dict = apply_vision_fields(raw_dict, vision_dict)
+                field_source = "groq-vision-primary"
+                skip_vision_fallback = True
+                logger.info("[OCR Flow] Field source for '%s': Groq Vision primary + regex/spatial gaps", path.name)
+            else:
+                logger.warning("[OCR Flow] Groq Vision primary returned nothing for '%s'; keeping cheap extract", path.name)
 
         cheap_fields = {
             k: v for k, v in raw_dict.items()
@@ -274,13 +289,17 @@ class LocalOCRProcessor(BaseOCRProcessor):
         }
         attach_field_calibration(normalized, raw_ocr)
         attach_consistency_checks(normalized, raw_ocr)
+        if skip_vision_fallback:
+            raw_ocr["groq_vision_primary"] = True
 
-        fallback = run_vision_fallback(
-            normalized,
-            raw_ocr,
-            page_images,
-            deterministic=raw_dict,
-        )
+        fallback = {"accepted": {}, "groq_fallback_called": False, "status": "skipped_primary", "decisions": []}
+        if not skip_vision_fallback:
+            fallback = run_vision_fallback(
+                normalized,
+                raw_ocr,
+                page_images,
+                deterministic=raw_dict,
+            )
         if fallback.get("accepted"):
             raw_dict = apply_accepted_fallback(raw_dict, fallback)
             if getattr(settings, "ENABLE_ENTITY_MATCHING", True):

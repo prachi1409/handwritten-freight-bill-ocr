@@ -56,6 +56,7 @@ SEED_GAZETTEER: Dict[str, List[str]] = {
         "W. Hooper St.",
         "Stockton, CA",
         "Vernalis, CA",
+        "Bell Marine",
     ],
     "destination": [
         "Discovery Bay",
@@ -63,6 +64,7 @@ SEED_GAZETTEER: Dict[str, List[str]] = {
         "Tracy, CA",
         "Palm Wood",
         "Palm Orwood Tract",
+        "Cannon Landfill",
     ],
     "driver_signature": [
         "Isaac Cordero",
@@ -93,12 +95,21 @@ SEED_ALIASES: Dict[str, Dict[str, str]] = {
         "crimplanethooper": "Clean Planet Hooper",
         "oceanplanet": "Clean Planet Hooper",
         "grandplanethooper": "Clean Planet Hooper",
+        "bellmarine": "Bell Marine",
+        "bellnarine": "Bell Marine",
     },
     "consignee": {
         "aguamarene": "Aquamarine",
         "aquamarine": "Aquamarine",
         "pauumeine": "Aquamarine",
         "pauumeinecons": "Aquamarine",
+        "colonel9co": "CORONE & CO",
+        "colonelco": "CORONE & CO",
+        "colonelandco": "CORONE & CO",
+        "coronel9co": "CORONE & CO",
+        "coronelco": "CORONE & CO",
+        "coroneandco": "CORONE & CO",
+        "corone": "CORONE & CO",
     },
     "origin": {
         "noenhouper": "North Hooper",
@@ -106,6 +117,16 @@ SEED_ALIASES: Dict[str, Dict[str, str]] = {
         "whosper": "W. Hooper St.",
         "hosper": "W. Hooper St.",
         "nhesper": "N. Hooper St.",
+        "bellmarine": "Bell Marine",
+        "bellnarine": "Bell Marine",
+    },
+    "destination": {
+        "concord": "Cannon Landfill",
+        "cannon": "Cannon Landfill",
+        "cannonlandfill": "Cannon Landfill",
+        "canonlandfill": "Cannon Landfill",
+        "cannonlf": "Cannon Landfill",
+        "canonlf": "Cannon Landfill",
     },
 }
 
@@ -296,6 +317,8 @@ def add_gazetteer_value(field: str, value: str, gazetteer: Optional[Dict[str, Li
 PARTY_STUB_FIELDS = frozenset({"consignor", "consignee", "driver_name"})
 PLACE_STUB_FIELDS = frozenset({"origin", "destination"})
 LETTERHEAD_PARTY_FIELDS = frozenset({"consignor", "consignee"})
+# Printed CMAT header city. Destination must not lock this when origin is a plant/site.
+LETTERHEAD_CITIES = frozenset({"stockton"})
 
 
 def collapsed_carrier_names(
@@ -338,7 +361,86 @@ def clear_letterhead_as_party(
     return out
 
 
-def is_weak_entity_stub(field: str, value: Any) -> bool:
+def _place_core(text: Any) -> str:
+    cleaned = re.sub(r"\b(ca|california)\b", "", str(text or ""), flags=re.I)
+    return _collapse(cleaned)
+
+
+def is_destination_copied_from_origin(
+    fields: Optional[Dict[str, Any]],
+    destination: Any = None,
+) -> bool:
+    """True when destination is origin, a city inside origin, or the letterhead city."""
+    data = dict(fields or {})
+    dest = str(destination if destination is not None else data.get("destination") or "").strip()
+    origin = str(data.get("origin") or "").strip()
+    dest_c = _place_core(dest)
+    origin_c = _place_core(origin)
+    if not dest_c:
+        return False
+    if origin_c and dest_c == origin_c:
+        return True
+    if origin_c and dest_c != origin_c and dest_c in origin_c and len(dest_c) >= 6:
+        return True
+    letterhead_keys = set(LETTERHEAD_CITIES) | {f"{city}ca" for city in LETTERHEAD_CITIES}
+    if dest_c not in letterhead_keys:
+        return False
+    if not origin_c:
+        return True
+    if dest_c in origin_c and origin_c != dest_c:
+        return True
+    return dest_c not in origin_c and origin_c not in dest_c
+
+
+def better_destination_from_ticket(
+    fields: Optional[Dict[str, Any]],
+    gazetteer: Optional[Dict[str, List[str]]] = None,
+) -> Optional[str]:
+    """Pick a dest gazetteer name that already appears on the ticket, not origin/letterhead."""
+    gaz_list = list((gazetteer or SEED_GAZETTEER).get("destination") or [])
+    blob = " ".join(
+        str((fields or {}).get(key) or "")
+        for key in ("consignee", "special_instructions", "commodity_description")
+    )
+    blob_c = _collapse(blob)
+    if not blob_c:
+        return None
+    best = None
+    best_len = 0
+    for cand in gaz_list:
+        key = _collapse(cand)
+        if not key or len(key) < 6 or key not in blob_c:
+            continue
+        probe = dict(fields or {})
+        probe["destination"] = cand
+        if is_destination_copied_from_origin(probe):
+            continue
+        if len(key) > best_len:
+            best = cand
+            best_len = len(key)
+    return best
+
+
+def resolve_copied_destination(
+    fields: Optional[Dict[str, Any]],
+    gazetteer: Optional[Dict[str, List[str]]] = None,
+) -> Dict[str, Any]:
+    """Clear or replace dest when it leaked from origin / letterhead. Do not invent."""
+    out = dict(fields or {})
+    if not is_destination_copied_from_origin(out):
+        return out
+    better = better_destination_from_ticket(out, gazetteer)
+    previous = out.get("destination")
+    if better:
+        logger.info("Destination copied from origin (%r); using page evidence %r", previous, better)
+        out["destination"] = better
+    else:
+        logger.info("Destination copied from origin (%r); clearing for review/Groq rescue", previous)
+        out["destination"] = None
+    return out
+
+
+def is_weak_entity_stub(field: str, value: Any, fields: Optional[Dict[str, Any]] = None) -> bool:
     """True for OCR fragments that must not lock extraction (e.g. 'clean', 'Aaua').
 
     Only party/place names are stubs. IDs, amounts, and carrier codes stay as-is.
@@ -351,8 +453,13 @@ def is_weak_entity_stub(field: str, value: Any) -> bool:
         return True
     if not _is_harvestable_name(field, text):
         return True
-    if is_letterhead_as_party(field, text):
+    if is_letterhead_as_party(field, text, carrier=(fields or {}).get("carrier") if fields else None):
         return True
+    if field == "destination":
+        ctx = dict(fields or {})
+        ctx["destination"] = text
+        if is_destination_copied_from_origin(ctx):
+            return True
     letters = re.sub(r"[^A-Za-z]", "", text)
     if field in PARTY_STUB_FIELDS:
         return len(letters) < 6
@@ -364,14 +471,12 @@ def is_weak_entity_stub(field: str, value: Any) -> bool:
         if re.search(r"\b\d{5}\b", text):
             return False
         if re.search(
-            r"\b(st|street|rd|road|ave|ca|stockton|tracy|discovery|vernalis|manteca|lathrop|hooper)\b",
+            r"\b(st|street|rd|road|ave|ca|stockton|tracy|discovery|vernalis|manteca|lathrop|hooper|cannon|landfill)\b",
             text,
             re.I,
         ):
             return False
-        tokens = re.findall(r"[A-Za-z]+", text)
-        if len(tokens) == 1 and letters.isalpha() and len(letters) >= 6:
-            return False
+        # Lone unknown city (Concord) must not lock a site name like Cannon Landfill.
         return True
     return False
 
@@ -662,6 +767,7 @@ def apply_entity_matching(
             out[key] = hit
     out = apply_zip_hints(out, mem.get("learned_zips") or {})
     out = apply_street_hints(out, mem)
+    out = resolve_copied_destination(out, gaz)
     return clear_letterhead_as_party(out, gaz)
 
 

@@ -18,6 +18,7 @@ from app.schemas.document import (
     DocumentReviewRequest,
     DocumentTranslateResponse,
     DocumentDeleteAllResponse,
+    DocumentReprocessAllResponse,
 )
 from app.ocr.report_pdf import build_extraction_report_pdf, render_first_page_png
 from app.services.document_service import DocumentService
@@ -93,6 +94,40 @@ def scan_documents(
     from app.core.config import settings
     from app.ingestion.scanner import process_ingestion_batch
     return process_ingestion_batch(db=db, input_dir=settings.INPUT_DOC_LOCATION)
+
+
+@router.post(
+    "/reprocess-all",
+    response_model=DocumentReprocessAllResponse,
+    summary="Reprocess All Freight Bill Documents",
+    description=(
+        "Reprocess every ingested bill with Groq Vision as the first field layer. "
+        "Overwrites extracted_data. Runs sequentially to avoid provider rate limits."
+    ),
+)
+def reprocess_all_documents(
+    db: Session = Depends(get_db),
+) -> DocumentReprocessAllResponse:
+    """Reprocess every document using the same Groq-primary path as a single reprocess."""
+    result = DocumentService.reprocess_all_documents(db=db)
+    processed = result["processed_count"]
+    failed = result["failed_count"]
+    total = result["total_count"]
+    if total == 0:
+        message = "No documents to reprocess."
+    elif failed:
+        message = (
+            f"Reprocessed {processed} of {total} bill{'s' if total != 1 else ''} "
+            f"({failed} failed)."
+        )
+    else:
+        message = f"Reprocessed {processed} bill{'s' if processed != 1 else ''}."
+    return DocumentReprocessAllResponse(
+        processed_count=processed,
+        failed_count=failed,
+        total_count=total,
+        message=message,
+    )
 
 
 @router.get(

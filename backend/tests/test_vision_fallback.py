@@ -6,6 +6,7 @@ from app.ocr.consistency import attach_consistency_checks
 from app.ocr.normalizer import normalize_freight_data, validate_extraction_status
 from app.ocr.vision_fallback import (
     REASON_AMBIGUOUS,
+    REASON_INCONSISTENT,
     REASON_LOW_CONF,
     REASON_MISSING,
     REASON_WEAK_OCR,
@@ -26,8 +27,8 @@ def _complete_fields(**overrides):
         "invoice_number": "INV-1",
         "consignor": "BELL MARINE",
         "consignee": "CORONE & CO",
-        "origin": "HOUSTON",
-        "destination": "DALLAS",
+        "origin": "North Hooper",
+        "destination": "Discovery Bay, CA",
         "freight_amount": "$100.00",
         "total_amount": "$100.00",
         "carrier": "CMAT",
@@ -251,6 +252,53 @@ def test_strong_deterministic_disagreement_is_not_overwritten():
     assert decision["agreed_with_deterministic"] is False
     merged = apply_accepted_fallback(extracted, report)
     assert merged["carrier"] == "CMAT"
+
+
+def test_origin_copied_destination_is_rescued_by_groq():
+    extracted = _extracted(
+        {"origin": "North Hooper", "destination": "Stockton"},
+        {**_high_conf(_complete_fields()), "origin": 0.85, "destination": 0.85},
+    )
+    plan = select_rescue_fields(extracted)
+    row = next(item for item in plan if item["field"] == "destination")
+    assert REASON_INCONSISTENT in row["reasons"] or REASON_WEAK_OCR in row["reasons"]
+    report = run_vision_fallback(
+        extracted,
+        {"field_confidence": extracted["field_confidence"]},
+        vision_fn=lambda *_a, **_k: {"destination": "Discovery Bay"},
+    )
+    assert report["accepted"]["destination"] == "Discovery Bay"
+    assert apply_accepted_fallback(extracted, report)["destination"] == "Discovery Bay"
+
+
+def test_ocr_guard_kept_party_is_rescued_by_groq():
+    extracted = _extracted(
+        {"consignor": "Ocean Planet"},
+        {**_high_conf(_complete_fields()), "consignor": 0.85},
+    )
+    raw_ocr = {
+        "field_confidence": extracted["field_confidence"],
+        "joint_decode": {
+            "applied": {
+                "fields": {
+                    "consignor": {
+                        "status": "ocr_guard",
+                        "previous": "Ocean Planet",
+                        "selected": "Clean Planet Hooper",
+                    }
+                }
+            }
+        },
+    }
+    plan = select_rescue_fields(extracted, raw_ocr)
+    row = next(item for item in plan if item["field"] == "consignor")
+    assert REASON_INCONSISTENT in row["reasons"]
+    report = run_vision_fallback(
+        extracted,
+        raw_ocr,
+        vision_fn=lambda *_a, **_k: {"consignor": "Clean Planet Hooper"},
+    )
+    assert report["accepted"]["consignor"] == "Clean Planet Hooper"
 
 
 def test_weak_ocr_stub_is_rescued_by_groq():

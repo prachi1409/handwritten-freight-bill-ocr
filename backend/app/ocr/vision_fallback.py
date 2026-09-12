@@ -8,7 +8,13 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from app.core.config import settings
 from app.ocr.calibration import STATUS_CALIBRATED, field_auto_post_threshold
 from app.ocr.decode import DECODE_FIELDS
-from app.ocr.matching import _collapse, is_gazetteer_near_miss, is_letterhead_as_party, is_weak_entity_stub
+from app.ocr.matching import (
+    _collapse,
+    is_destination_copied_from_origin,
+    is_gazetteer_near_miss,
+    is_letterhead_as_party,
+    is_weak_entity_stub,
+)
 from app.ocr.normalizer import is_form_header_value, looks_like_ocr_junk
 
 logger = logging.getLogger(__name__)
@@ -19,6 +25,7 @@ REASON_WEAK_OCR = "weak_ocr_stub"
 REASON_AMBIGUOUS = "candidate_ambiguity"
 REASON_JOINT = "joint_decode_uncertain"
 REASON_CONSISTENCY = "consistency_conflict"
+REASON_INCONSISTENT = "inconsistent_with_ticket"
 
 RESCUE_FIELDS = (
     "bill_number",
@@ -50,6 +57,7 @@ CONSISTENCY_TRIGGER_CODES = frozenset(
     {
         "HISTORICAL_RELATIONSHIP_CONFLICT",
         "CONSIGNOR_EQUALS_CONSIGNEE",
+        "DESTINATION_COPIED_FROM_ORIGIN",
     }
 )
 
@@ -171,10 +179,11 @@ def field_confidence_signal(
     strong = bool(
         _has_value(value)
         and used >= max(threshold, _min_confidence())
-        and not is_weak_entity_stub(field, value)
+        and not is_weak_entity_stub(field, value, extracted)
         and not is_letterhead_as_party(field, value, carrier=(extracted or {}).get("carrier"))
         and not looks_like_ocr_junk(value)
         and not near_miss
+        and not (field == "destination" and is_destination_copied_from_origin(extracted, value))
     )
     return {
         "heuristic": heuristic,
@@ -239,6 +248,14 @@ def _consistency_hits(raw_ocr: Optional[Dict[str, Any]], extracted: Optional[Dic
     return hits
 
 
+def _ocr_guard_kept(raw_ocr: Optional[Dict[str, Any]], field: str) -> bool:
+    joint = (raw_ocr or {}).get("joint_decode") if isinstance(raw_ocr, dict) else None
+    applied = joint.get("applied") if isinstance(joint, dict) else None
+    rows = applied.get("fields") if isinstance(applied, dict) else None
+    row = rows.get(field) if isinstance(rows, dict) else None
+    return isinstance(row, dict) and row.get("status") == "ocr_guard"
+
+
 def select_rescue_fields(
     extracted: Optional[Dict[str, Any]],
     raw_ocr: Optional[Dict[str, Any]] = None,
@@ -256,7 +273,7 @@ def select_rescue_fields(
         if empty:
             reasons.append(REASON_MISSING)
         elif (
-            is_weak_entity_stub(field, data.get(field))
+            is_weak_entity_stub(field, data.get(field), data)
             or looks_like_ocr_junk(data.get(field))
             or is_gazetteer_near_miss(
                 field,
@@ -265,6 +282,12 @@ def select_rescue_fields(
             )
         ):
             reasons.append(REASON_WEAK_OCR)
+        if field == "destination" and is_destination_copied_from_origin(data):
+            reasons.append(REASON_INCONSISTENT)
+        if is_letterhead_as_party(field, data.get(field), carrier=data.get("carrier")):
+            reasons.append(REASON_INCONSISTENT)
+        if field in ("consignor", "consignee", "destination", "origin") and _ocr_guard_kept(raw_ocr, field):
+            reasons.append(REASON_INCONSISTENT)
         if signal["calibrated_available"]:
             if signal["used"] < max(float(signal["threshold"]), _min_confidence()):
                 reasons.append(REASON_LOW_CONF)
@@ -294,7 +317,7 @@ def select_rescue_fields(
         priority = 0
         if REASON_MISSING in reasons:
             priority += 8
-        if REASON_LOW_CONF in reasons or REASON_WEAK_OCR in reasons:
+        if REASON_LOW_CONF in reasons or REASON_WEAK_OCR in reasons or REASON_INCONSISTENT in reasons:
             priority += 4
         if REASON_AMBIGUOUS in reasons:
             priority += 2
@@ -531,10 +554,12 @@ def merge_fallback_fields(
             or (REASON_LOW_CONF in reasons)
             or (REASON_MISSING in reasons)
             or (REASON_WEAK_OCR in reasons)
-            or is_weak_entity_stub(field, previous)
+            or (REASON_INCONSISTENT in reasons)
+            or is_weak_entity_stub(field, previous, det)
             or is_letterhead_as_party(field, previous, carrier=det.get("carrier"))
             or looks_like_ocr_junk(previous)
             or is_gazetteer_near_miss(field, previous)
+            or (field == "destination" and is_destination_copied_from_origin(det, previous))
         )
         usable = _usable_groq_value(field, groq_value)
         agreed = bool(usable and _has_value(previous) and _values_agree(previous, groq_value))
@@ -547,11 +572,13 @@ def merge_fallback_fields(
             action = "keep_deterministic"
         elif weak and not strong:
             action = "accept_groq"
+        elif strong and not agreed and REASON_INCONSISTENT in reasons:
+            action = "accept_groq"
         elif strong and not agreed:
             action = "keep_deterministic_disagreement"
         else:
             # Ambiguity / consistency on a mid-strength value: Groq may rescue.
-            if REASON_AMBIGUOUS in reasons or REASON_CONSISTENCY in reasons:
+            if REASON_AMBIGUOUS in reasons or REASON_CONSISTENCY in reasons or REASON_INCONSISTENT in reasons:
                 if not strong:
                     action = "accept_groq"
                 else:
